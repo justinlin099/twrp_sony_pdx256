@@ -14,4 +14,10 @@ for entry in entries:
     if hashlib.sha256(path.read_bytes()).hexdigest() != entry['sha256']:
         raise ValueError(f'Factory runtime checksum mismatch: {path}')
 
-print(f'Verified {len(factory.index)} recovery records and {len(entries)} runtime files.')
+device = root / 'device/sony/pdx256'
+overlays = [e for e in json.loads((device/'ramdisk-recipe.json').read_text()) if e['source'] == 'overlay']
+for entry in overlays:
+    path = device / 'ramdisk-overlay' / entry['path']
+    if hashlib.sha256(path.read_bytes()).hexdigest() != entry['reference_sha256']:
+        raise ValueError(f'Ramdisk overlay checksum mismatch: {path}')
+print(f'Verified {len(factory.index)} recovery records, {len(entries)} runtime files and {len(overlays)} overlay files.')

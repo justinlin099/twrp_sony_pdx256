@@ -1,8 +1,6 @@
 __pycache__/
 *.pyc
 out/
-vendor/sony/pdx256/proprietary/
-vendor/sony/pdx256/stock-recovery.img
 *.img
 /device/sony/pdx256/
 /vendor/sony/pdx256/
