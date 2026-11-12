@@ -1,0 +1,47 @@
+{
+  "repositories": {
+    "integration": "0c2ed752dfb3a458e71deb7b1583f006e9980ba6",
+    "device": "18c878d700b90919da9cfad1b63bb3d581caa16d",
+    "vendor": "257542edb3b6faa5eeb2893e3721ec9af6b8c1f7"
+  },
+  "upstream_project_count": 657,
+  "resolved_manifest_matches_pins": true,
+  "environment": [
+    "Python 3.10.12",
+    "6.18.33.2-microsoft-standard-WSL2",
+    "PRETTY_NAME=\"Ubuntu 22.04.5 LTS\"",
+    "NAME=\"Ubuntu\"",
+    "VERSION_ID=\"22.04\"",
+    "VERSION=\"22.04.5 LTS (Jammy Jellyfish)\"",
+    "VERSION_CODENAME=jammy",
+    "ID=ubuntu",
+    "ID_LIKE=debian",
+    "HOME_URL=\"https://www.ubuntu.com/\"",
+    "SUPPORT_URL=\"https://help.ubuntu.com/\"",
+    "BUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"",
+    "PRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"",
+    "UBUNTU_CODENAME=jammy"
+  ],
+  "environment_kind": "Fresh Ubuntu Base chroot sharing the existing WSL2 kernel",
+  "source_download": "Fresh network sync, no reference checkout or compiler cache",
+  "output_directory": "Empty before full compile; retained for packaging-only checkout repair",
+  "iteration": "Full compile from empty out; packaging retried after Git runtime byte-preservation fix. Compiled sources unchanged.",
+  "factory_inputs": "Only files downloaded from the private vendor repository",
+  "start_utc": "2026-11-12T18:44:16Z",
+  "end_utc": "2026-11-12T19:07:11Z",
+  "image_bytes": 104857600,
+  "package_validation": {
+    "sha256": "f7dc9fc2ed1e72217a81ad9f323d4e08abc5275238edda7f31ad7094a2453f05",
+    "ramdisk_entries": 696,
+    "reference_content_differences": [
+      "sepolicy",
+      "system/bin/xperia_recovery_service_trace"
+    ],
+    "reference_identical": false,
+    "policy_cil_equivalent": true,
+    "reference_image_sha256": "9c800a77069b78c646cb97cee904e2b6d7410091e4e6b96a821f245c115ad4a1"
+  },
+  "latest_device_tested_image_sha256": "f7dc9fc2ed1e72217a81ad9f323d4e08abc5275238edda7f31ad7094a2453f05",
+  "matches_latest_device_tested_image": true,
+  "flashed": false
+}

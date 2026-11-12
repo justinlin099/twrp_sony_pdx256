@@ -112,8 +112,10 @@ TWRP／函式庫、文字設定與圖示。SELinux 從 vendor tree 的原廠 pol
 內部儲存／microSD、壓縮備份、MTP／ADB 切換及 fastbootd 往返。
 整機 Data 還原尚未實測，不能以備份成功代替還原成功。
 
-repo 整理的離線驗證見 `VALIDATION.md`。本 repo 尚未完成另一台電腦從零
-下載全部原始碼的完整建置驗收；不宣稱已驗證任意新環境。
+已完成從 GitHub 重新下載三個 repo、657 個上游專案與空白 `out` 的完整編譯。
+新 Ubuntu 22.04.5 使用者環境的產物與最新實機驗證版本逐位元相同。
+此環境共享既有 WSL2 核心，不是另一台實體電腦；詳細過程、修正與限制見
+`VALIDATION.md`，精確 commit／雜湊見 `validation/clean-build-20261113.json`。
 
 ## 授權與發佈
 

@@ -1,63 +1,70 @@
-# Repository export validation — 2026-11-12
+# Clean GitHub rebuild validation - 2026-11-13
 
-## Device codename rename — 2026-11-13
+**PASS:** a fresh Ubuntu userspace and fresh upstream download produced the same
+100 MiB image as the latest device-tested build, byte for byte.
 
-Renamed device/vendor directories and product to pdx256; XQ-FS72 model and firmware
-checks remain unchanged. Active WSL device tree was migrated; prepare.py and
-lunch twrp_pdx256-ap2a-eng passed. This rename has not yet had a full rebuild or
-device flash. Existing xq_fs72-named output images remain historical artifacts.
+SHA-256:
+`f7dc9fc2ed1e72217a81ad9f323d4e08abc5275238edda7f31ad7094a2453f05`
 
-## Kernel dependency removal — 2026-11-13
+## Environment and inputs
 
-- Removed the device-specific kernel tree and source-build experiment tools.
-- Extraction succeeds with only stock recovery and the seven system runtime files.
-- Fresh temporary checkouts pass prepare without any kernel tree or Image input.
-- Recovery builds with TARGET_NO_KERNEL=true and PRODUCT_BUILD_RECOVERY_IMAGE=true.
-- Ninja recovery target has no old prebuilt-kernel dependency; raw header kernel_size=0.
-- New Sony AVB packaging passed and produced SHA-256
-  `d9dbd069bffa6fe79d565c3841e742aadceeaffb4b5b21bb65d6c1fda9df55fb`,
-  byte-identical to the earlier repository rebuild. No phone was flashed.
+- Fresh Ubuntu Base 22.04.5 amd64 rootfs; official archive checksum verified.
+- Isolated chroot sharing the existing WSL2 kernel, not a separate physical PC
+  or full virtual machine. Build sandboxing reported disabled under this setup.
+- Dependencies installed from the repo script; Python 3.10.12.
+- All three private GitHub repositories freshly cloned. Exact tested revisions
+  and environment are recorded in [the evidence JSON](validation/clean-build-20261113.json).
+- All 657 upstream projects freshly downloaded, with no reference checkout or
+  compiler cache. Resolved project revisions exactly match the pinned manifest.
+- Empty `out` before the full compile. No prior compiler output was imported.
+- Factory dependencies came entirely from the cloned vendor tree. No phone,
+  local factory image, or external blob directory was supplied to this build.
+- All source trees, rootfs and build output were stored on the external ext4 disk.
 
-The phone was left in Android. Repository organization did not reboot or flash it.
+## Issues found and fixed by this test
 
-## Passed
+1. The minimal Ubuntu installation lacked the `python` command. Added
+   `python-is-python3` to the dependency installer, then started with empty output.
+2. Git normalized one line ending in a checksummed init.rc payload. The full
+   compile succeeded but the packager correctly rejected the changed bytes.
+   Added byte-preserving Git attributes for runtime overlays and checked all
+   staged payload hashes. Fresh clones then passed all checks.
+3. Added overlay verification before compilation so this type of checkout error
+   fails immediately. Existing device files are no longer recopied when unchanged.
 
-- Exported patches replayed on pristine upstream file contents; all 53 modified
-  or added files match the working source (40 recovery, 12 vold, 1 adb).
-- `prepare.py` applied all patches in fresh temporary Git clones of the pinned
-  projects, installed device inputs, then ran again without duplicate
-  application. The original build checkout was not changed by this test.
-- Stock recovery and seven runtime inputs passed SHA-256 extraction
-  checks. Their imported copies are excluded by `.gitignore`.
-- Python tools compile and `build.sh` passes Bash syntax checking.
-- Recovery and all six explicitly required runtime-library targets completed a
-  build in the existing pinned checkout. Host checkpolicy/secilc output targets
-  were separately checked through Ninja and were up to date.
-- The new packager rebuilt a recovery using stock inputs and the existing current
-  build output. It did not consume any historical custom recovery image.
-- All 696 CPIO entries round-trip correctly. Every payload matches the validated
-  reference except the recompiled SELinux binary. The complete normalized decoded
-  CIL matches the reference; no rule differences are ignored.
-- LZ4 round-trip and Sony-layout AVB signature/hash verification passed.
+After the Git attribute correction, the repositories were cloned again and the
+build/packaging command rerun in the same new environment. Compiled source code
+was unchanged, so output from the full clean compile was retained for this
+packaging-only correction; it was not an additional full recompilation.
 
-Reference device-tested image SHA-256:
-`9c800a77069b78c646cb97cee904e2b6d7410091e4e6b96a821f245c115ad4a1`
+The full compilation reported 17m34s. Start-to-final-package time including the
+checkout repair was about 23 minutes, excluding upstream downloads. Intermittent
+external-disk I/O retries occurred; one earlier Ninja status-FIFO timeout was
+logged despite successful compilation. The final command exited successfully,
+and the complete image hash matches the device-tested reference.
 
-Repository-rebuilt image SHA-256:
-`d9dbd069bffa6fe79d565c3841e742aadceeaffb4b5b21bb65d6c1fda9df55fb`
+## Passed checks
 
-Different SELinux binary ordering means the complete image is **not byte-identical**.
-The rebuilt image has not been flashed; do not describe offline equivalence as a
-new device boot test.
+- 488 extracted recovery records, seven runtime blobs and 23 overlay payloads
+  passed SHA-256 checks after fresh GitHub download.
+- Required recovery/runtime-library and host policy-compiler targets completed.
+- All 696 final CPIO records round-tripped with their expected metadata/content.
+- Recompiled SELinux policy matched the expected normalized CIL semantics.
+- LZ4 round-trip, Android v4 image assembly, upstream AVB signature and recovery
+  payload hash verification passed.
+- Final image is byte-identical to the latest device-tested icon build above.
+- Repeating source preparation preserved timestamps of all eight device files.
+- All three repositories were confirmed private with default branch `twrp-14.1`.
 
-## Remaining validation
+## Scope and remaining limits
 
-- Full download and clean build in an independent Linux environment. Current
-  packaging tests use the existing compiler output, not a second clean build.
-- A real personal Data restore remains untested. No personal Data was wiped to
-  validate this export.
+No phone was rebooted or flashed during this repository validation. The earlier
+full-image reference in the packaging recipe has hash `9c800a...`; its report
+lists policy ordering and service-launcher build-ID differences. That historical
+comparison is distinct from the latest device-tested `f7dc9f...` image, which
+matches this clean build exactly.
 
-For maintainers, `tools/verify_source_export.py REFERENCE_SOURCE` checks that the
-exported patches reproduce a known working checkout. `tools/package.py
---verify-reference ...` additionally requires reference-identical ramdisk payloads
-(with explicitly checked CIL equivalence for the SELinux binary).
+A real personal Data restore remains untested. Backup success is not evidence of
+restore success. The remaining Sony init/ramdisk/policy integration is described
+in [ARCHITECTURE.md](ARCHITECTURE.md); this is not a claim that plain upstream
+`m recoveryimage` without the integration produces the final deployable image.
