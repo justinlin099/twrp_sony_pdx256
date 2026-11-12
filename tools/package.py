@@ -7,7 +7,8 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from image import read_image,read_records,write_records,replace_data,aligned
+from image import read_image,read_records,write_records,replace_data
+from factory import FactoryFiles
 
 ROOT=Path(__file__).resolve().parents[1]
 def sha(data): return hashlib.sha256(data).hexdigest()
@@ -24,8 +25,8 @@ def main():
     host=args.host_out or source/'out/host/linux-x86'
     device=ROOT/'device/sony/pdx256'; vendor=ROOT/'vendor/sony/pdx256'
     firmware=json.loads((vendor/'firmware.json').read_text())
-    stockpath=vendor/'stock-recovery.img'
-    header,archive=read_image(stockpath,firmware['recovery_sha256']); stock=read_records(archive)
+    stock=FactoryFiles(vendor)
+    stock.verify()
     rawpath=product/'recovery.img'
     _,archive=read_image(rawpath,sha(rawpath.read_bytes())); raw=read_records(archive)
     recipe=json.loads((device/'ramdisk-recipe.json').read_text())
@@ -33,7 +34,7 @@ def main():
     args.output.parent.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='xperia-package-') as tmp:
         tmp=Path(tmp)
-        policy=stock['sepolicy'][1]
+        policy=stock.read('sepolicy')
         (tmp/'stock.policy').write_bytes(policy)
         run(str(host/'bin/checkpolicy'),'-b','-C','-M',str(tmp/'stock.policy'),'-o',str(tmp/'stock.cil'))
         lines=(tmp/'stock.cil').read_text().splitlines()
@@ -49,7 +50,7 @@ def main():
         assembled={}; differences=[]
         for e in recipe:
             name=e['name']; kind=e['source']; path=e['path']
-            if kind=='stock': data=stock[path][1]
+            if kind=='stock': data=stock.read(path)
             elif kind=='build-ramdisk': data=raw[path][1]
             elif kind=='build-file': data=(product/path).read_bytes()
             elif kind=='vendor': data=(vendor/'proprietary'/path).read_bytes()
@@ -67,11 +68,12 @@ def main():
         if read_records(archive)!=assembled: raise ValueError('CPIO round trip failed')
         packed=subprocess.check_output(['lz4','-l','-12','--favor-decSpeed','-c'],input=archive)
         if subprocess.check_output(['lz4','-d','-c'],input=packed)!=archive: raise ValueError('LZ4 round trip failed')
-        payload=header[:12]+struct.pack('<I',len(packed))+header[16:]+packed
-        payload=payload.ljust(aligned(len(payload),4096),b'\0')
-        (tmp/'unsigned.img').write_bytes(payload)
-        run(sys.executable,str(ROOT/'tools/sony_avb.py'),str(stockpath),str(source/'external/avb'),str(args.output),
-            '--twrp-raw',str(tmp/'unsigned.img'),'--raw-sha256',sha(payload))
+        (tmp/'ramdisk.lz4').write_bytes(packed)
+        run(sys.executable,str(source/'system/tools/mkbootimg/mkbootimg.py'),
+            '--header_version','4','--ramdisk',str(tmp/'ramdisk.lz4'),'--output',str(tmp/'unsigned.img'))
+        run(sys.executable,str(ROOT/'tools/sony_avb.py'),str(device/'image-config.json'),
+            str(source/'external/avb'),str(args.output),'--twrp-raw',str(tmp/'unsigned.img'),
+            '--raw-sha256',sha((tmp/'unsigned.img').read_bytes()))
         _,archive=read_image(args.output,sha(args.output.read_bytes()))
         if read_records(archive)!=assembled: raise ValueError('Final ramdisk differs')
         report={'sha256':sha(args.output.read_bytes()),'ramdisk_entries':len(assembled),

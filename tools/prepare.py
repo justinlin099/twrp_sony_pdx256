@@ -30,7 +30,7 @@ def main():
         for path in (ROOT/tree).rglob('*'):
             if '.git' in path.relative_to(ROOT/tree).parts or path.name in ('.gitignore', '.gitattributes', 'NOTICE.md'): continue
             if not path.is_file() or path.name=='README.md': continue
-            if 'ramdisk-overlay' in path.parts or 'sepolicy' in path.parts or 'assets' in path.relative_to(ROOT/tree).parts or path.name=='ramdisk-recipe.json': continue
+            if 'ramdisk-overlay' in path.parts or 'sepolicy' in path.parts or 'assets' in path.relative_to(ROOT/tree).parts or path.name in ('ramdisk-recipe.json', 'image-config.json'): continue
             target=source/path.relative_to(ROOT)
             if target.exists() and target.read_bytes()!=path.read_bytes():
                 raise ValueError(f'Existing tree differs; use a clean checkout: {target}')

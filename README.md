@@ -63,10 +63,6 @@ cp "$PORT/manifests/default.xml" .repo/manifests/pdx256-pinned.xml
 repo init -m pdx256-pinned.xml
 repo sync -c -j8
 
-python3 "$PORT/tools/extract.py" \
-  --recovery /path/to/stock-recovery.img \
-  --system-root /path/to/extracted-factory-root
-
 bash "$PORT/build.sh" "$SOURCE" /path/to/output/recovery.img 8
 ```
 
@@ -79,9 +75,12 @@ bash "$PORT/build.sh" "$SOURCE" /path/to/output/recovery.img 8
 鎖定的 commit。三者缺一不可；現有 checkout 若版本不符或有修改，腳本會停止。
 本機 tree 的 Git metadata 不會被 `prepare.py` 複製到 Android 原始碼目錄。
 
-`extract.py` 只需要符合雜湊的原廠 recovery 與系統相依檔案。
+私人 vendor repo 已收錄 7 個原廠 runtime，以及逐檔拆出的 recovery 相依檔。
+`build.sh` 自動呼叫 `prepare-factory.py` 核對所有 SHA-256；不必另行
+從手機或韌體匯入檔案，也不需要完整或壓縮的原廠 recovery 映像。
 不需要 boot.img、kernel Image，也不需要讀取手機私人資料或圖形鎖。
-檔案擷取來源的必要路徑列於 `vendor/sony/pdx256/proprietary-files.json`。
+`extract.py` 保留給維護者匯入同版本的原廠檔案；來源路徑與雜湊列於
+`vendor/sony/pdx256/proprietary-files.json`。
 
 `prepare.py` 會核對 commit、補丁雜湊與套用狀態；遇到不同的 device tree 會停止，
 不覆蓋使用者修改。`build.sh` 保留目前上游使用的
@@ -94,15 +93,18 @@ recovery.img。** 原始輸出還沒有 Sony 開機所需的完整 ramdisk／AVB
 
 ## 封裝原理
 
-從使用者提供的 stock recovery 解出原廠 ramdisk，依明確配方加入當次建置的
-TWRP／函式庫、原廠 runtime、文字設定與圖示。SELinux 從原廠 policy 解碼，
+依明確配方組合 vendor tree 內逐檔保存的相依內容、當次建置的
+TWRP／函式庫、文字設定與圖示。SELinux 從 vendor tree 的原廠 policy 解碼，
 套用可審閱的 `add.cil`／`remove.cil` 再編譯；不靠歷次測試映像疊加。
 
-Sony AVB descriptor 排序與版面保留，改以 AOSP 公開測試金鑰簽署，適用於
+映像由上游 `mkbootimg` 產生，AVB 由未修改的上游 `avbtool` 依
+`device/sony/pdx256/image-config.json` 設定產生，不再自行重寫 AVB 二進位欄位。
+使用 AOSP 公開測試金鑰簽署，適用於
 已解鎖 bootloader 的測試移植。此金鑰不是 Sony 金鑰，不代表能鎖回 bootloader。
 最終映像不包含 kernel；目前仍使用原廠 kernel／vendor 相依。
 
 建置設定使用 `TARGET_NO_KERNEL := true`；此 repo 不包含 kernel tree 或核心建置流程。
+精簡檢查、已移除的重複流程與仍需保留的移植部分見 `ARCHITECTURE.md`。
 
 ## 驗證範圍
 
@@ -115,7 +117,8 @@ repo 整理的離線驗證見 `VALIDATION.md`。本 repo 尚未完成另一台�
 
 ## 授權與發佈
 
-參閱 `NOTICE.md`。不要把忽略的原廠映像、runtime、私人日誌或手機備份加入 Git。
+參閱 `NOTICE.md`。vendor repo 僅收錄版本清單指定的原廠相依檔；不要加入
+私人日誌、手機備份或無關韌體。原廠檔案維持各自原有授權，並未重新授權。
 這份 repo 不含手機憑證，也不需要分享圖形／密碼。
 目前圖示使用向量機身、第三方 SONY／XPERIA 字標及實機 TWRP 首頁截圖。
 16／24／32／48 px 顯示背面上半部，64／96／128／256 px 顯示正背面。

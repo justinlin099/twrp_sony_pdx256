@@ -6,7 +6,10 @@ Exact upstream projects and revisions are in `manifests/default.xml` and
 `patches/series.json`. Keep upstream authorship when splitting these patches into
 commits or submitting them to TeamWin.
 
-Sony factory runtime binaries are user-supplied, hash checked, and Git ignored.
+The private vendor repository includes seven hash-checked factory runtime files
+and individually extracted recovery dependencies from firmware 71.2.A.2.35.
+No complete stock recovery image is included. These files retain their
+original licenses; inclusion does not relicense Sony or third-party components.
 Stock-derived configuration and SELinux differences are included for this port.
 The reviewed SVG sources under assets/mtp-icons in the device tree include
 third-party SONY/XPERIA vector wordmarks and a user-captured TWRP home screen.

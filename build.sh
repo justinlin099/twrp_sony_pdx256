@@ -4,6 +4,7 @@ port_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 source_dir=$(realpath -- "${1:?Usage: bash build.sh SOURCE_DIR OUTPUT_IMG [JOBS]}")
 output_img=$(realpath -m -- "${2:?Output image required}")
 jobs=${3:-8}
+python3 "$port_dir/tools/prepare-factory.py"
 python3 "$port_dir/tools/prepare.py" "$source_dir"
 cd "$source_dir"
 export ALLOW_MISSING_DEPENDENCIES=true
