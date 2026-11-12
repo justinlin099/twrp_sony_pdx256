@@ -8,7 +8,7 @@ TWRP 原始碼主版本為 **3.7.1_14**，使用固定 commit。這不是 TeamWi
 
 ## 版本與分支
 
-- 本專案三個 repo 的分支：`twrp-3.7.1_14`。
+- 本專案三個 repo 的分支：`twrp-14.1`。
 - 上游 manifest 分支：`twrp-14.1`，用於下方 `repo init` 指令。
 - 上游 recovery 原始碼分支：`android-14.1`。
 - 固定 recovery commit：`426b747737e7ce9e9e17da5b4d2ba883f296aec7`；
@@ -29,7 +29,7 @@ tools/                擷取、套用補丁、封裝與驗證工具
 build.sh              編譯並輸出可刷寫的 Sony recovery
 ```
 
-目前拆成建置整合、device、vendor 三個獨立 Git repo，分支皆為 `twrp-3.7.1_14`。
+目前拆成建置整合、device、vendor 三個獨立 Git repo，分支皆為 `twrp-14.1`。
 device/vendor repo 在上述路徑中獨立管理，由外層 repo 忽略，不是 submodule。
 尚未建立遠端網址，也沒有以假的 GitHub URL 填入 manifest。`patches/` 必須套用：只拉 device/vendor 加上
 未修改的官方 TWRP，無法取得這個 Sony FBE／顯示／儲存與 USB 移植。
@@ -62,10 +62,10 @@ bash "$PORT/build.sh" "$SOURCE" /path/to/output/recovery.img 8
 上游建置說明：[TWRP minimal manifest](https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp)。
 本專案使用固定版本 manifest，不能任意替換成其他分支。
 
-取得本建置整合 repo 後，必須另外將兩個 tree 的 `twrp-3.7.1_14` 分支 clone 到
+取得本建置整合 repo 後，必須另外將兩個 tree 的 `twrp-14.1` 分支 clone 到
 `$PORT/device/sony/pdx256` 與 `$PORT/vendor/sony/pdx256`。三者缺一不可。
 本機 tree 的 Git metadata 不會被 `prepare.py` 複製到 Android 原始碼目錄。
-遠端尚未建立；本機可用各 repo 的絕對路徑作為 `git clone -b twrp-3.7.1_14` 的來源。
+遠端尚未建立；本機可用各 repo 的絕對路徑作為 `git clone -b twrp-14.1` 的來源。
 
 `extract.py` 只需要符合雜湊的原廠 recovery 與系統相依檔案。
 不需要 boot.img、kernel Image，也不需要讀取手機私人資料或圖形鎖。
