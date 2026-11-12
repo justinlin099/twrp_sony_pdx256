@@ -32,8 +32,10 @@ def main():
             if not path.is_file() or path.name=='README.md': continue
             if 'ramdisk-overlay' in path.parts or 'sepolicy' in path.parts or 'assets' in path.relative_to(ROOT/tree).parts or path.name in ('ramdisk-recipe.json', 'image-config.json'): continue
             target=source/path.relative_to(ROOT)
-            if target.exists() and target.read_bytes()!=path.read_bytes():
-                raise ValueError(f'Existing tree differs; use a clean checkout: {target}')
+            if target.exists():
+                if target.read_bytes()!=path.read_bytes():
+                    raise ValueError(f'Existing tree differs; use a clean checkout: {target}')
+                continue
             copies.append((path,target))
     for repo,patch in pending: run('git','-C',str(repo),'apply',str(patch))
     for path,target in copies:

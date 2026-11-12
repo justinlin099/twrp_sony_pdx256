@@ -12,6 +12,8 @@
   recipe entry referenced them; native TWRP backup remains unchanged.
 - External manual blob import as a build prerequisite: the private vendor tree
   now includes every pinned dependency. Extraction is a maintainer operation.
+- Recopying unchanged device files on each build: prepare now preserves their
+  timestamps, avoiding unnecessary build-rule regeneration on repeat runs.
 
 Using the same compiler output, the split-input/upstream-tool package matched
 the flashed icon build byte for byte:
