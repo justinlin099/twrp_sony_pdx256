@@ -1,0 +1,14 @@
+[
+  {
+    "path": "device/sony/pdx256",
+    "url": "https://github.com/justinlin099/android_device_sony_pdx256.git",
+    "branch": "twrp-14.1",
+    "revision": "ddd41aa54e4041c41b61579d398d74009e27c468"
+  },
+  {
+    "path": "vendor/sony/pdx256",
+    "url": "https://github.com/justinlin099/android_vendor_sony_pdx256.git",
+    "branch": "twrp-14.1",
+    "revision": "833daa3375ad1d279325d7e572da6cc43b4af750"
+  }
+]

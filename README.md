@@ -31,13 +31,22 @@ build.sh              編譯並輸出可刷寫的 Sony recovery
 
 目前拆成建置整合、device、vendor 三個獨立 Git repo，分支皆為 `twrp-14.1`。
 device/vendor repo 在上述路徑中獨立管理，由外層 repo 忽略，不是 submodule。
-尚未建立遠端網址，也沒有以假的 GitHub URL 填入 manifest。`patches/` 必須套用：只拉 device/vendor 加上
+三個 GitHub 倉庫目前均為私人：
+
+- 建置整合：<https://github.com/justinlin099/twrp_sony_pdx256>
+- Device：<https://github.com/justinlin099/android_device_sony_pdx256>
+- Vendor：<https://github.com/justinlin099/android_vendor_sony_pdx256>
+
+`trees.lock.json` 固定兩個 companion tree 的 commit。`patches/` 必須套用：只拉 device/vendor 加上
 未修改的官方 TWRP，無法取得這個 Sony FBE／顯示／儲存與 USB 移植。
 
 ## 建置
 
 使用 Linux／WSL2 的 Linux 檔案系統放 Android 原始碼與輸出；建議至少保留
-150 GiB，實際用量依快取／平行度增加。主機需有 Android 14 建置工具鏈所需
+150 GiB，實際用量依快取／平行度增加。建議使用獨立 Ubuntu 22.04 環境；
+在該環境內以 root 執行 `bash tools/install-build-deps.sh` 安裝相依套件，
+並安裝 [Google repo launcher](https://gerrit.googlesource.com/git-repo/+/refs/heads/main/README.md)。
+主機需有 Android 14 建置工具鏈所需
 套件，以及 `git`、`repo`、Python 3.10+、`lz4`、`openssl`、`binutils`。
 本 repo 不需放在原始碼樹內。以下 `$PORT` 是此 repo 的絕對路徑，
 `$SOURCE` 是乾淨的 TWRP 原始碼目錄；請自行指定磁碟位置。
@@ -45,6 +54,8 @@ device/vendor repo 在上述路徑中獨立管理，由外層 repo 忽略，不�
 ```bash
 export PORT=/path/to/xperia-recovery-port
 export SOURCE=/path/to/twrp-source
+git clone -b twrp-14.1 https://github.com/justinlin099/twrp_sony_pdx256.git "$PORT"
+python3 "$PORT/tools/checkout-trees.py"
 mkdir -p "$SOURCE"
 cd "$SOURCE"
 repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-14.1
@@ -62,10 +73,11 @@ bash "$PORT/build.sh" "$SOURCE" /path/to/output/recovery.img 8
 上游建置說明：[TWRP minimal manifest](https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp)。
 本專案使用固定版本 manifest，不能任意替換成其他分支。
 
-取得本建置整合 repo 後，必須另外將兩個 tree 的 `twrp-14.1` 分支 clone 到
-`$PORT/device/sony/pdx256` 與 `$PORT/vendor/sony/pdx256`。三者缺一不可。
+私人倉庫需先設定 GitHub Git 認證，例如 `gh auth login`、`gh auth setup-git`；
+不要把 token 寫進 URL、腳本或 manifest。`checkout-trees.py` 會將兩個 tree
+下載到 `$PORT/device/sony/pdx256` 與 `$PORT/vendor/sony/pdx256`，並 checkout
+鎖定的 commit。三者缺一不可；現有 checkout 若版本不符或有修改，腳本會停止。
 本機 tree 的 Git metadata 不會被 `prepare.py` 複製到 Android 原始碼目錄。
-遠端尚未建立；本機可用各 repo 的絕對路徑作為 `git clone -b twrp-14.1` 的來源。
 
 `extract.py` 只需要符合雜湊的原廠 recovery 與系統相依檔案。
 不需要 boot.img、kernel Image，也不需要讀取手機私人資料或圖形鎖。
@@ -105,3 +117,6 @@ repo 整理的離線驗證見 `VALIDATION.md`。本 repo 尚未完成另一台�
 
 參閱 `NOTICE.md`。不要把忽略的原廠映像、runtime、私人日誌或手機備份加入 Git。
 這份 repo 不含手機憑證，也不需要分享圖形／密碼。
+目前圖示使用向量機身、第三方 SONY／XPERIA 字標及實機 TWRP 首頁截圖。
+16／24／32／48 px 顯示背面上半部，64／96／128／256 px 顯示正背面。
+舊 commit 仍有照片圖示；私人上傳不等於已完成公開發佈的素材授權整理。
