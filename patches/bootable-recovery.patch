@@ -1,0 +1,4104 @@
+diff --git a/Android.mk b/Android.mk
+index 78b9430..dbcf522 100755
+--- a/Android.mk
++++ b/Android.mk
+@@ -334,23 +334,30 @@ ifeq ($(TW_INCLUDE_CRYPTO), true)
+     TW_INCLUDE_CRYPTO_FBE := true
+     LOCAL_CFLAGS += -DTW_INCLUDE_FBE
+     LOCAL_SHARED_LIBRARIES += android.frameworks.stats@1.0 android.hardware.authsecret@1.0 \
+-	android.security.authorization-ndk_platform \
++	android.security.authorization-ndk \
+         android.hardware.oemlock@1.0 libf2fs_sparseblock \
+         libandroidicu.recovery \
++        android.hardware.gatekeeper-V1-ndk \
++        android.hardware.security.keymint-V3-ndk \
+         android.hardware.gatekeeper@1.0 \
+         android.hardware.weaver@1.0 \
+         android.frameworks.stats@1.0 \
+-        android.security.maintenance-ndk_platform \
+-        android.system.keystore2-V1-ndk_platform \
++        android.security.maintenance-ndk \
++        android.system.keystore2-V4-ndk \
+         libkeyutils \
+         liblog \
+         libsqlite.recovery \
+         libkeystoreinfo.recovery \
+         libgatekeeper_aidl
+ 
+-    LOCAL_STATIC_LIBRARIES += libkeymint_support
++    LOCAL_STATIC_LIBRARIES += libkeymint_support libasync_safe
++    LOCAL_SHARED_LIBRARIES += libsysutils
+ 
+     LOCAL_CFLAGS += -DTW_INCLUDE_FBE_METADATA_DECRYPT
++    ifeq ($(TW_EXCLUDE_FDE), true)
++        LOCAL_CFLAGS += -DTW_EXCLUDE_FDE
++        LOCAL_STATIC_LIBRARIES += libdm
++    endif
+ 
+     ifeq ($(TARGET_HW_DISK_ENCRYPTION),true)
+         ifeq ($(TARGET_CRYPTFS_HW_PATH),)
+@@ -389,6 +396,9 @@ ifneq ($(TW_CUSTOM_BATTERY_PATH),)
+     TW_USE_LEGACY_BATTERY_SERVICES := true
+     LOCAL_CFLAGS += -DTW_CUSTOM_BATTERY_PATH=$(TW_CUSTOM_BATTERY_PATH)
+ endif
++ifneq ($(TW_CUSTOM_CPU_TEMP_SENSOR),)
++	LOCAL_CFLAGS += -DTW_CUSTOM_CPU_TEMP_SENSOR=$(TW_CUSTOM_CPU_TEMP_SENSOR)
++endif
+ ifneq ($(TW_CUSTOM_CPU_TEMP_PATH),)
+ 	LOCAL_CFLAGS += -DTW_CUSTOM_CPU_TEMP_PATH=$(TW_CUSTOM_CPU_TEMP_PATH)
+ endif
+diff --git a/data.cpp b/data.cpp
+index c19fe4c..c4674cd 100644
+--- a/data.cpp
++++ b/data.cpp
+@@ -27,6 +27,8 @@
+ 
+ #include "variables.h"
+ #include "data.hpp"
++#include "named-thermal-sensor.hpp"
++#include "thermal-value.hpp"
+ #include "partitions.hpp"
+ #include "twrp-functions.hpp"
+ #ifndef TW_NO_SCREEN_TIMEOUT
+@@ -650,7 +652,9 @@ void DataManager::SetDefaultValues()
+ 	mConst.SetValue("tw_no_cpu_temp", "1");
+ #else
+ 	string cpu_temp_file;
+-#ifdef TW_CUSTOM_CPU_TEMP_PATH
++#ifdef TW_CUSTOM_CPU_TEMP_SENSOR
++	cpu_temp_file = FindNamedThermalSensor("/sys/class/thermal", EXPAND(TW_CUSTOM_CPU_TEMP_SENSOR));
++#elif defined(TW_CUSTOM_CPU_TEMP_PATH)
+ 	cpu_temp_file = EXPAND(TW_CUSTOM_CPU_TEMP_PATH);
+ #else
+ 	cpu_temp_file = "/sys/class/thermal/thermal_zone0/temp";
+@@ -1004,7 +1008,7 @@ int DataManager::GetMagicValue(const string& varName, string& value)
+ 		if (tw_no_cpu_temp == 1) return -1;
+ 
+ 		string cpu_temp_file;
+-		static unsigned long convert_temp = 0;
++		static long convert_temp = 0;
+ 		static time_t cpuSecCheck = 0;
+ 		struct timeval curTime;
+ 		string results;
+@@ -1012,7 +1016,11 @@ int DataManager::GetMagicValue(const string& varName, string& value)
+ 		gettimeofday(&curTime, NULL);
+ 		if (curTime.tv_sec > cpuSecCheck)
+ 		{
+-#ifdef TW_CUSTOM_CPU_TEMP_PATH
++#ifdef TW_CUSTOM_CPU_TEMP_SENSOR
++			cpu_temp_file = FindNamedThermalSensor("/sys/class/thermal", EXPAND(TW_CUSTOM_CPU_TEMP_SENSOR));
++			if (cpu_temp_file.empty() || TWFunc::read_file(cpu_temp_file, results) != 0)
++				return -1;
++#elif defined(TW_CUSTOM_CPU_TEMP_PATH)
+ 			cpu_temp_file = EXPAND(TW_CUSTOM_CPU_TEMP_PATH);
+ 			if (TWFunc::read_file(cpu_temp_file, results) != 0)
+ 				return -1;
+@@ -1021,11 +1029,17 @@ int DataManager::GetMagicValue(const string& varName, string& value)
+ 			if (TWFunc::read_file(cpu_temp_file, results) != 0)
+ 				return -1;
+ #endif
++#ifdef TW_CUSTOM_CPU_TEMP_SENSOR
++			int degrees;
++			if (!ParseCpuThermalValue(results, degrees)) return -1;
++			convert_temp = degrees;
++#else
+ 			convert_temp = strtoul(results.c_str(), NULL, 0) / 1000;
+ 			if (convert_temp <= 0)
+ 				convert_temp = strtoul(results.c_str(), NULL, 0);
+ 			if (convert_temp >= 150)
+ 				convert_temp = strtoul(results.c_str(), NULL, 0) / 10;
++#endif
+ 			cpuSecCheck = curTime.tv_sec + 5;
+ 		}
+ 		value = TWFunc::to_string(convert_temp);
+diff --git a/exclude.cpp b/exclude.cpp
+index 8ce138a..6699f00 100644
+--- a/exclude.cpp
++++ b/exclude.cpp
+@@ -58,35 +58,44 @@ void TWExclude::add_absolute_dir(const string& dir) {
+ 	absolutedir.push_back(TWFunc::Remove_Trailing_Slashes(dir));
+ }
+ 
+-uint64_t TWExclude::Get_Folder_Size(const string& Path) {
+-	DIR* d;
+-	struct dirent* de;
+-	struct stat st;
+-	uint64_t dusize = 0;
+-	string FullPath;
+-
+-	d = opendir(Path.c_str());
+-	if (d == NULL) {
+-		gui_msg(Msg(msg::kError, "error_opening_strerr=Error opening: '{1}' ({2})")(Path)(strerror(errno)));
+-		return 0;
+-	}
+-
+-	while ((de = readdir(d)) != NULL) {
+-		FullPath = Path + "/";
+-		FullPath += de->d_name;
+-		if (lstat(FullPath.c_str(), &st)) {
+-			gui_msg(Msg(msg::kError, "error_opening_strerr=Error opening: '{1}' ({2})")(FullPath)(strerror(errno)));
+-			LOGINFO("Real error: Unable to stat '%s'\n", FullPath.c_str());
+-			continue;
+-		}
+-		if ((st.st_mode & S_IFDIR) && !check_skip_dirs(FullPath) && de->d_type != DT_SOCK) {
+-			dusize += Get_Folder_Size(FullPath);
+-		} else if (st.st_mode & S_IFREG || st.st_mode & S_IFLNK) {
+-			dusize += (uint64_t)(st.st_size);
+-		}
+-	}
+-	closedir(d);
+-	return dusize;
++uint64_t TWExclude::Get_Folder_Size(const string& Path, bool* Complete) {
++    if (Complete) *Complete = true;
++    uint64_t dusize = 0;
++    DIR* directory = opendir(Path.c_str());
++    if (!directory) {
++        if (Complete) *Complete = false;
++        gui_msg(Msg(msg::kError, "error_opening_strerr=Error opening: '{1}' ({2})")(Path)(strerror(errno)));
++        return 0;
++    }
++    for (;;) {
++        errno = 0;
++        struct dirent* entry = readdir(directory);
++        if (!entry) {
++            if (errno) {
++                if (Complete) *Complete = false;
++                LOGERR("Unable to finish directory scan: %s\n", strerror(errno));
++            }
++            break;
++        }
++        const string path = Path + "/" + entry->d_name;
++        // Exclusions apply to both files and directories, before accessing either.
++        if (check_skip_dirs(path)) continue;
++        struct stat info {};
++        if (lstat(path.c_str(), &info) != 0) {
++            if (Complete) *Complete = false;
++            gui_msg(Msg(msg::kError, "error_opening_strerr=Error opening: '{1}' ({2})")(path)(strerror(errno)));
++            continue;
++        }
++        if (S_ISDIR(info.st_mode)) {
++            bool child_complete = true;
++            dusize += Get_Folder_Size(path, &child_complete);
++            if (Complete && !child_complete) *Complete = false;
++        } else if (S_ISREG(info.st_mode) || S_ISLNK(info.st_mode)) {
++            dusize += static_cast<uint64_t>(info.st_size);
++        }
++    }
++    closedir(directory);
++    return dusize;
+ }
+ 
+ bool TWExclude::check_relative_skip_dirs(const string& dir) {
+diff --git a/exclude.hpp b/exclude.hpp
+index 5cdc416..431f34f 100644
+--- a/exclude.hpp
++++ b/exclude.hpp
+@@ -28,7 +28,7 @@ class TWExclude {
+ 
+ public:
+ 	TWExclude();
+-	uint64_t Get_Folder_Size(const string& Path); // Gets the folder's size using stat
++	uint64_t Get_Folder_Size(const string& Path, bool* Complete = nullptr); // Gets the folder's size using stat
+ 	void add_absolute_dir(const string& Path);
+ 	void add_relative_dir(const string& Path);
+ 	bool check_relative_skip_dirs(const string& dir);
+diff --git a/gui/action.cpp b/gui/action.cpp
+index f47623d..31d2c05 100755
+--- a/gui/action.cpp
++++ b/gui/action.cpp
+@@ -634,6 +634,8 @@ int GUIAction::clear(std::string arg)
+ 	return 0;
+ }
+ 
++extern bool XperiaRequestDataUnlock();
++
+ int GUIAction::mount(std::string arg)
+ {
+ 	if (arg == "usb") {
+@@ -643,8 +645,13 @@ int GUIAction::mount(std::string arg)
+ 		else
+ 			gui_msg("simulating=Simulating actions...");
+ 	} else if (!simulate) {
+-		PartitionManager.Mount_By_Path(arg, true);
+-		PartitionManager.Add_MTP_Storage(arg);
++        TWPartition* part = PartitionManager.Find_Partition_By_Path(arg);
++        if (part && part->Sony_FBE_Adopted && !part->Is_Decrypted) {
++            if (!XperiaRequestDataUnlock())
++                gui_err("decrypt_before_mount=Unlock Data before mounting it.");
++        } else if (PartitionManager.Mount_By_Path(arg, true)) {
++            PartitionManager.Add_MTP_Storage(arg);
++        }
+ 	} else
+ 		gui_msg("simulating=Simulating actions...");
+ 	return 0;
+@@ -1511,6 +1518,8 @@ int GUIAction::checkbackupname(std::string arg __unused)
+ 	return 0;
+ }
+ 
++extern bool XperiaCheckCeFromGui(std::string& password);
++
+ int GUIAction::decrypt(std::string arg __unused)
+ {
+ 	int op_status = 0;
+@@ -1523,6 +1532,14 @@ int GUIAction::decrypt(std::string arg __unused)
+ 		string userID;
+ 		DataManager::GetValue("tw_crypto_password", Password);
+ 
++		if (DataManager::GetIntValue("tw_xperia_ce_test") != 0) {
++			DataManager::SetValue("tw_crypto_password", std::string(Password.size(), '\0'));
++			DataManager::SetValue("tw_crypto_password", "");
++			const bool verified = XperiaCheckCeFromGui(Password);
++			operation_end(verified ? 0 : 1);
++			return 0;
++		}
++
+ 		if (DataManager::GetIntValue(TW_IS_FBE)) {  // for FBE
+ 			DataManager::GetValue("tw_crypto_user_id", userID);
+ 			if (userID != "") {
+diff --git a/gui/fileselector.cpp b/gui/fileselector.cpp
+index 5835e90..5b84daf 100644
+--- a/gui/fileselector.cpp
++++ b/gui/fileselector.cpp
+@@ -265,7 +265,14 @@ int GUIFileSelector::GetFileList(const std::string folder)
+ 		return -1;
+ 	}
+ 
+-	while ((de = readdir(d)) != NULL) {
++	int directory_error = 0;
++	for (;;) {
++		errno = 0;
++		de = readdir(d);
++		if (!de) {
++			directory_error = errno;
++			break;
++		}
+ 		FileData data;
+ 		bool match = false;
+ 
+@@ -349,6 +356,15 @@ int GUIFileSelector::GetFileList(const std::string folder)
+ 		}
+ 	}
+ 	closedir(d);
++	if (directory_error) {
++		LOGERR("Unable to read directory (errno=%d: %s)\n", directory_error, strerror(directory_error));
++		mFolderList.clear();
++		mFileList.clear();
++		return -1;
++	}
++	if (folder == "/sdcard" || folder == "/data/media/0")
++		LOGINFO("Internal file list: folders=%zu files=%zu show_folders=%d show_files=%d\n",
++		        mFolderList.size(), mFileList.size(), mShowFolders, mShowFiles);
+ 
+ 	std::sort(mFolderList.begin(), mFolderList.end(), fileSort);
+ 	std::sort(mFileList.begin(), mFileList.end(), fileSort);
+diff --git a/gui/gui.cpp b/gui/gui.cpp
+index 874cdd9..354c01b 100755
+--- a/gui/gui.cpp
++++ b/gui/gui.cpp
+@@ -296,6 +296,13 @@ void InputHandler::process_EV_ABS(input_event& ev)
+ 			if (state == AS_IN_ACTION_AREA)
+ 			{
+ 				LOGEVENT("TOUCH_DRAG: %d,%d\n", x, y);
++				// Pattern entry needs each hardware sample. Coalescing to one
++				// position per frame can lose intermediate cells in a stroke.
++				if (DataManager::GetIntValue("tw_xperia_ce_test") != 0 &&
++				    PageManager::GetCurrentPage() == "decrypt_pattern" &&
++				    PageManager::NotifyTouch(TOUCH_DRAG, x, y) > 0) {
++					state = AS_NO_ACTION;
++				}
+ 			}
+ 		}
+ 	}
+@@ -550,7 +557,8 @@ static void loopTimer(int input_timeout_ms)
+ 		// We need to sleep some period time microseconds
+ 		//unsigned int sleepTime = 33333 -(diff.tv_nsec / 1000);
+ 		//usleep(sleepTime); // removed so we can scan for input
+-		input_timeout_ms = 0;
++		// Yield while waiting for the next frame; pending input still wakes poll immediately.
++		input_timeout_ms = 1;
+ 	} while (1);
+ }
+ 
+@@ -757,7 +765,10 @@ std::string gui_lookup(const std::string& resource_name, const std::string& defa
+ 
+ extern "C" int gui_init(void)
+ {
+-	gr_init();
++	if (gr_init() != 0) {
++		fprintf(stderr, "TWRP display initialization failed\n");
++		return -1;
++	}
+ 	TWFunc::Set_Brightness(DataManager::GetStrValue("tw_brightness"));
+ 
+ #ifdef TW_SCREEN_BLANK_ON_BOOT
+diff --git a/gui/objects.hpp b/gui/objects.hpp
+index 7ca15ed..975b9f9 100755
+--- a/gui/objects.hpp
++++ b/gui/objects.hpp
+@@ -1208,7 +1208,7 @@ protected:
+ 	void ConnectDot(int dot_idx);
+ 	void ConnectIntermediateDots(int dot_idx);
+ 	void Resize(size_t size);
+-	int InDot(int x, int y);
++	int InDot(int x, int y, bool sony_pattern);
+ 	bool DotUsed(int dot_idx);
+ 	std::string GeneratePassphrase();
+ 	void PatternDrawn();
+diff --git a/gui/patternpassword.cpp b/gui/patternpassword.cpp
+index cedfda3..e31cb6a 100755
+--- a/gui/patternpassword.cpp
++++ b/gui/patternpassword.cpp
+@@ -26,6 +26,7 @@
+ #include <unistd.h>
+ #include <stdlib.h>
+ 
++#include <algorithm>
+ #include <string>
+ #include <sstream>
+ 
+@@ -247,25 +248,18 @@ void GUIPatternPassword::Resize(size_t n) {
+ 	mNeedRender = true;
+ }
+ 
+-static int pow(int x, int i)
+-{
+-	int result = 1;
+-	if (i<0)
+-		return 0;
+-	while(i-- > 0)
+-		result *= x;
+-	return result;
+-}
+-
+-static bool IsInCircle(int x, int y, int ox, int oy, int r)
+-{
+-	return pow(x - ox, 2) + pow(y - oy, 2) <= pow(r, 2);
+-}
+-
+-int GUIPatternPassword::InDot(int x, int y)
++int GUIPatternPassword::InDot(int x, int y, bool sony_pattern)
+ {
++	// Sony's 3x3 lockscreen uses 0.6 times half the smaller grid pitch.
++	const double radius = sony_pattern
++		? 0.3 * std::min(mDots[1].x - mDots[0].x, mDots[3].y - mDots[0].y)
++		: mDotRadius * 3;
++	const double radius_squared = radius * radius;
+ 	for (size_t i = 0; i < mGridSize * mGridSize; ++i) {
+-		if (IsInCircle(x, y, mDots[i].x + mDotRadius, mDots[i].y + mDotRadius, mDotRadius*3))
++		const double dx = x - (mDots[i].x + mDotRadius);
++		const double dy = y - (mDots[i].y + mDotRadius);
++		const double distance_squared = dx * dx + dy * dy;
++		if (sony_pattern ? distance_squared < radius_squared : distance_squared <= radius_squared)
+ 			return i;
+ 	}
+ 	return -1;
+@@ -359,21 +353,24 @@ int GUIPatternPassword::NotifyTouch(TOUCH_STATE state, int x, int y)
+ 	if (!isConditionTrue())
+ 		return -1;
+ 
++	const bool sony_pattern = mGridSize == 3 && mPassVar == "tw_crypto_password" &&
++	                          DataManager::GetIntValue("tw_xperia_ce_test") != 0;
+ 	switch (state)
+ 	{
+ 		case TOUCH_START:
+ 		{
+-			const int dot_idx = InDot(x, y);
+-			if (dot_idx == -1)
++			const int dot_idx = InDot(x, y, sony_pattern);
++			if (dot_idx == -1 && !sony_pattern)
+ 				break;
+ 
+ 			mTrackingTouch = true;
+ 			ResetActiveDots();
+-			ConnectDot(dot_idx);
+-
++			if (dot_idx != -1) {
++				ConnectDot(dot_idx);
+ #ifndef TW_NO_HAPTICS
+-			DataManager::Vibrate("tw_button_vibrate");
++				DataManager::Vibrate("tw_button_vibrate");
+ #endif
++			}
+ 
+ 			mCurLineX = x;
+ 			mCurLineY = y;
+@@ -385,7 +382,7 @@ int GUIPatternPassword::NotifyTouch(TOUCH_STATE state, int x, int y)
+ 			if (!mTrackingTouch)
+ 				break;
+ 
+-			const int dot_idx = InDot(x, y);
++			const int dot_idx = InDot(x, y, sony_pattern);
+ 			if (dot_idx != -1 && !DotUsed(dot_idx))
+ 			{
+ 				ConnectIntermediateDots(dot_idx);
+@@ -409,7 +406,11 @@ int GUIPatternPassword::NotifyTouch(TOUCH_STATE state, int x, int y)
+ 
+ 			mNeedRender = true;
+ 			mTrackingTouch = false;
+-			PatternDrawn();
++			// Ignore accidental short gestures before calling Gatekeeper.
++			if (!sony_pattern || mConnectedDotsLen >= 4)
++				PatternDrawn();
++			else if (mConnectedDotsLen != 0)
++				DataManager::SetValue("tw_password_fail", "1");
+ 			ResetActiveDots();
+ 			break;
+ 		}
+@@ -419,6 +420,8 @@ int GUIPatternPassword::NotifyTouch(TOUCH_STATE state, int x, int y)
+ 	return 0;
+ }
+ 
++
++
+ int GUIPatternPassword::NotifyVarChange(const std::string& varName, const std::string& value)
+ {
+ 	if (!isConditionTrue())
+diff --git a/libpixelflinger/clear.cpp b/libpixelflinger/clear.cpp
+index b962456..2e34101 100644
+--- a/libpixelflinger/clear.cpp
++++ b/libpixelflinger/clear.cpp
+@@ -15,7 +15,7 @@
+ ** limitations under the License.
+ */
+ 
+-#include <cutils/memory.h>
++#include <algorithm>
+ 
+ #include "clear.h"
+ #include "buffer.h"
+@@ -70,7 +70,7 @@ static void memset2d(context_t* c, const surface_t& s, uint32_t packed,
+         break;
+     case 2:
+         do {
+-            android_memset16((uint16_t*)dst, packed, w);
++            std::fill_n(reinterpret_cast<uint16_t*>(dst), w / sizeof(uint16_t), packed);
+             dst += stride;
+         } while(--h);
+         break;
+@@ -78,7 +78,7 @@ static void memset2d(context_t* c, const surface_t& s, uint32_t packed,
+         break;
+     case 4:
+         do {
+-            android_memset32((uint32_t*)dst, packed, w);
++            std::fill_n(reinterpret_cast<uint32_t*>(dst), w / sizeof(uint32_t), packed);
+             dst += stride;
+         } while(--h);
+         break;
+diff --git a/libpixelflinger/scanline.cpp b/libpixelflinger/scanline.cpp
+index 4cc23c7..b19ae5b 100644
+--- a/libpixelflinger/scanline.cpp
++++ b/libpixelflinger/scanline.cpp
+@@ -22,7 +22,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ 
+-#include <cutils/memory.h>
++#include <algorithm>
+ #include <log/log.h>
+ 
+ #include "buffer.h"
+@@ -50,13 +50,15 @@
+ 
+ #ifdef NDEBUG
+ #   define ANDROID_RELEASE
+-#   define ANDROID_CODEGEN      ANDROID_CODEGEN_GENERATED
+ #else
+ #   define ANDROID_DEBUG
+-#   define ANDROID_CODEGEN      ANDROID_CODEGEN_GENERATED
+ #endif
+ 
+-#if defined(__arm__) || (defined(__mips__) && ((!defined(__LP64__) && __mips_isa_rev < 6) || defined(__LP64__))) || defined(__aarch64__)
++// Sony recovery disallows executable writable memory for the scanline JIT.
++#define ANDROID_CODEGEN ANDROID_CODEGEN_GENERIC
++
++#if ANDROID_CODEGEN == ANDROID_CODEGEN_GENERATED && \
++    (defined(__arm__) || (defined(__mips__) && ((!defined(__LP64__) && __mips_isa_rev < 6) || defined(__LP64__))) || defined(__aarch64__))
+ #   define ANDROID_ARM_CODEGEN  1
+ #else
+ #   define ANDROID_ARM_CODEGEN  0
+@@ -2287,7 +2289,7 @@ void scanline_memset16(context_t* c)
+     surface_t* cb = &(c->state.buffers.color);
+     uint16_t* dst = reinterpret_cast<uint16_t*>(cb->data) + (x+(cb->stride*y));
+     uint32_t packed = c->packed;
+-    android_memset16(dst, packed, ct*2);
++    std::fill_n(dst, ct, packed);
+ }
+ 
+ void scanline_memset32(context_t* c)
+@@ -2298,7 +2300,7 @@ void scanline_memset32(context_t* c)
+     surface_t* cb = &(c->state.buffers.color);
+     uint32_t* dst = reinterpret_cast<uint32_t*>(cb->data) + (x+(cb->stride*y));
+     uint32_t packed = GGL_HOST_TO_RGBA(c->packed);
+-    android_memset32(dst, packed, ct*4);
++    std::fill_n(dst, ct, packed);
+ }
+ 
+ void scanline_clear(context_t* c)
+diff --git a/libpixelflinger/trap.cpp b/libpixelflinger/trap.cpp
+index 06ad237..e30f803 100644
+--- a/libpixelflinger/trap.cpp
++++ b/libpixelflinger/trap.cpp
+@@ -21,7 +21,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ 
+-#include <cutils/memory.h>
++#include <algorithm>
+ #include <log/log.h>
+ 
+ #include "trap.h"
+@@ -918,7 +918,7 @@ static int compare_edges(const AAEdge *e0, const AAEdge *e1) {
+ static inline 
+ void SET_COVERAGE(int16_t*& p, int32_t value, ssize_t n)
+ {
+-    android_memset16((uint16_t*)p, value, n*2);
++    std::fill_n(reinterpret_cast<uint16_t*>(p), n, value);
+     p += n;
+ }
+ 
+diff --git a/libtar/Android.mk b/libtar/Android.mk
+index c3bb691..c37f7c6 100755
+--- a/libtar/Android.mk
++++ b/libtar/Android.mk
+@@ -14,19 +14,21 @@ LOCAL_C_INCLUDES += external/libselinux/include
+ LOCAL_SHARED_LIBRARIES += libselinux
+ 
+ ifeq ($(TW_INCLUDE_CRYPTO_FBE), true)
+-    LOCAL_STATIC_LIBRARIES += libvold libscrypt_static
++    LOCAL_STATIC_LIBRARIES += libvold libscrypt_static libasync_safe
+     LOCAL_SHARED_LIBRARIES +=  \
+         android.hardware.boot@1.0 \
+         android.hardware.confirmationui@1.0 \
++        android.hardware.gatekeeper-V1-ndk \
++        android.hardware.security.keymint-V3-ndk \
+         android.hardware.gatekeeper@1.0 \
+         android.hardware.keymaster@3.0 \
+         android.hardware.keymaster@4.0 \
+         android.hardware.keymaster@4.1 \
+         android.hardware.weaver@1.0 \
+-        android.security.apc-ndk_platform \
+-        android.system.keystore2-V1-ndk_platform \
+-        android.security.authorization-ndk_platform \
+-        android.security.maintenance-ndk_platform \
++        android.security.apc-ndk \
++        android.system.keystore2-V4-ndk \
++        android.security.authorization-ndk \
++        android.security.maintenance-ndk \
+         libselinux \
+         libbinder_ndk \
+         libext4_utils \
+@@ -52,6 +54,8 @@ ifeq ($(TW_INCLUDE_CRYPTO_FBE), true)
+         liblog \
+         libhwbinder \
+         libchrome \
++        libboot_control_client \
++        libsysutils \
+         libbootloader_message \
+         libgatekeeper_aidl
+ 
+@@ -85,6 +89,11 @@ LOCAL_STATIC_LIBRARIES += libselinux
+ 
+ ifeq ($(TW_INCLUDE_CRYPTO_FBE), true)
+     LOCAL_CFLAGS += -DUSE_FSCRYPT
++    ifeq ($(TW_USE_FSCRYPT_POLICY), 1)
++        LOCAL_CFLAGS += -DUSE_FSCRYPT_POLICY_V1
++    else
++        LOCAL_CFLAGS += -DUSE_FSCRYPT_POLICY_V2
++    endif
+     LOCAL_C_INCLUDES += system/vold
+ endif
+ 
+diff --git a/libtar/append.c b/libtar/append.c
+index 225ae1a..af18ecc 100755
+--- a/libtar/append.c
++++ b/libtar/append.c
+@@ -40,6 +40,7 @@
+ 
+ #ifdef USE_FSCRYPT
+ #include "fscrypt_policy.h"
++#include <sys/ioctl.h>
+ #endif
+ 
+ #include "android_utils.h"
+@@ -72,6 +73,33 @@ tar_dev_free(tar_dev_t *tdp)
+ }
+ 
+ 
++#if defined(USE_FSCRYPT) && !defined(USE_FSCRYPT_POLICY_V1)
++/* A policy identifier alone does not mean its key survived a full unmount. */
++static bool tar_fscrypt_key_present(const char *directory,
++                                    const tar_fscrypt_policy *policy)
++{
++	int fd = open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
++	if (fd < 0)
++		return false;
++	struct fscrypt_get_key_status_arg status = {0};
++	status.key_spec.type = FSCRYPT_KEY_SPEC_TYPE_IDENTIFIER;
++	memcpy(status.key_spec.u.identifier, policy->master_key_identifier,
++	       FSCRYPT_KEY_IDENTIFIER_SIZE);
++	int result = ioctl(fd, FS_IOC_GET_ENCRYPTION_KEY_STATUS, &status);
++	int error = errno;
++	close(fd);
++	if (result != 0) {
++		errno = error;
++		return false;
++	}
++	if (status.status != FSCRYPT_KEY_STATUS_PRESENT) {
++		errno = ENOKEY;
++		return false;
++	}
++	return true;
++}
++#endif
++
+ /* appends a file to the tar archive */
+ int
+ tar_append_file(TAR *t, const char *realname, const char *savename)
+@@ -82,7 +110,6 @@ tar_append_file(TAR *t, const char *realname, const char *savename)
+ 	tar_dev_t *td = NULL;
+ 	tar_ino_t *ti = NULL;
+ 	char path[MAXPATHLEN];
+-	int filefd;
+ 
+ #ifdef DEBUG
+ 	LOG("==> tar_append_file(TAR=0x%p (\"%s\"), realname=\"%s\", "
+@@ -101,6 +128,9 @@ tar_append_file(TAR *t, const char *realname, const char *savename)
+ 	/* set header block */
+ #ifdef DEBUG
+ 	LOG("tar_append_file(): setting header block...");
++#endif
++#ifdef USE_FSCRYPT
++	free(t->th_buf.fep);
+ #endif
+ 	memset(&(t->th_buf), 0, sizeof(struct tar_header));
+ 	th_set_from_stat(t, &s);
+@@ -126,9 +156,11 @@ tar_append_file(TAR *t, const char *realname, const char *savename)
+ 			t->th_buf.selinux_context = strdup(selinux_context);
+ 			LOG("  ==> set selinux context: %s\n", selinux_context);
+ 			freecon(selinux_context);
++			if (!t->th_buf.selinux_context) return -1;
+ 		}
+ 		else
+ 		{
++			if (t->options & TAR_REQUIRE_METADATA) return -1;
+ #ifdef DEBUG
+ 			perror("Failed to get selinux context");
+ #endif
+@@ -136,56 +168,39 @@ tar_append_file(TAR *t, const char *realname, const char *savename)
+ 	}
+ 
+ #ifdef USE_FSCRYPT
+-	if (TH_ISDIR(t) && t->options & TAR_STORE_FSCRYPT_POL)
++	if (TH_ISDIR(t) && (t->options & TAR_STORE_FSCRYPT_POL))
+ 	{
+-		if (t->th_buf.fep != NULL)
+-		{
+-			free(t->th_buf.fep);
+-			t->th_buf.fep = NULL;
+-		}
+-		t->th_buf.fep = (fscrypt_policy *)malloc(sizeof(fscrypt_policy));
+-		if (!t->th_buf.fep) {
+-			LOG("malloc fs_encryption_policy\n");
+-			return -1;
+-		}
+-
+-		if (fscrypt_policy_get_struct(realname, t->th_buf.fep)) {
+-			uint8_t size, hex_size, *descriptor;
+-			size = get_policy_size(t->th_buf.fep, false);
+-			hex_size = get_policy_size(t->th_buf.fep, true);
+-			descriptor = get_policy_descriptor(t->th_buf.fep);
+-			char user_ce[4], user_de[4], system_de[4];
+-			sprintf(user_ce,"%u%s", t->th_buf.fep->version, USER_CE_FSCRYPT_POLICY);
+-			sprintf(user_de,"%u%s", t->th_buf.fep->version, USER_DE_FSCRYPT_POLICY);
+-			sprintf(system_de,"%u%s", t->th_buf.fep->version, SYSTEM_DE_FSCRYPT_POLICY);
+-#ifdef DEBUG
+-			LOG("version: %u\n", t->th_buf.fep->version);
++		tar_fscrypt_policy policy;
++		int policy_error = 0;
++		if (!fscrypt_policy_get_struct(realname, &policy)) {
++			policy_error = errno;
++		} else if (policy.version != TAR_FSCRYPT_VERSION) {
++			policy_error = EOPNOTSUPP;
++#ifndef USE_FSCRYPT_POLICY_V1
++		} else if ((t->options & TAR_REQUIRE_FSCRYPT_POL) &&
++		           !tar_fscrypt_key_present(realname, &policy)) {
++			policy_error = errno;
++			LOG("Encrypted directory key unavailable; refusing incomplete backup\n");
+ #endif
+-			uint8_t tar_policy[size];
+-			char policy_hex[hex_size];
+-			memset(tar_policy, 0, sizeof(tar_policy));
+-			bytes_to_hex(descriptor, size, policy_hex);
+-			if (lookup_ref_key(t->th_buf.fep,  &tar_policy[0])) {
+-				if (strncmp((char *) tar_policy, user_ce, sizeof(user_ce) - 1) == 0 
+-				|| strncmp((char *) tar_policy, user_de, sizeof(user_de) - 1) == 0 
+-				|| strncmp((char *) tar_policy, system_de, sizeof(system_de)) == 0) {
+-					memcpy(descriptor, tar_policy, size);
+-					LOG("found fscrypt policy '%s' - '%s' - '%s'\n", realname, descriptor, policy_hex);
+-				} else {
+-					LOG("failed to match fscrypt tar policy for '%s' - '%s'\n", realname, policy_hex);
+-					free(t->th_buf.fep);
+-					t->th_buf.fep = NULL;
+-				}
++		} else {
++			/* The textual reference can be longer than the on-disk key field. */
++			uint8_t reference[32] = {0};
++			if (lookup_ref_key(&policy, reference) &&
++			    strlen((const char *)reference) <= TAR_FSCRYPT_KEY_SIZE) {
++				memcpy(tar_fscrypt_key(&policy), reference, TAR_FSCRYPT_KEY_SIZE);
++				t->th_buf.fep = malloc(sizeof(policy));
++				if (!t->th_buf.fep)
++					return -1;
++				*t->th_buf.fep = policy;
+ 			} else {
+-				LOG("failed to lookup fscrypt tar policy for '%s' - '%s'\n", realname, policy_hex);
+-				free(t->th_buf.fep);
+-				t->th_buf.fep = NULL;
++				LOG("Unable to represent fscrypt policy for '%s'\n", realname);
++				policy_error = ENOKEY;
+ 			}
+ 		}
+-		else {
+-			// no policy found, but this is not an error as not all dirs will have a policy
+-			free(t->th_buf.fep);
+-			t->th_buf.fep = NULL;
++		if ((t->options & TAR_REQUIRE_FSCRYPT_POL) &&
++		    policy_error != 0 && policy_error != ENODATA) {
++			errno = policy_error;
++			return -1;
+ 		}
+ 	}
+ #endif
+@@ -205,6 +220,8 @@ tar_append_file(TAR *t, const char *realname, const char *savename)
+ #if 1 //def DEBUG
+ 			print_caps(&t->th_buf.cap_data);
+ #endif
++		} else if ((t->options & TAR_REQUIRE_METADATA) && errno != ENODATA) {
++			return -1;
+ 		}
+ 	}
+ 
+@@ -217,6 +234,8 @@ tar_append_file(TAR *t, const char *realname, const char *savename)
+ #if 1 //def DEBUG
+ 			LOG("storing xattr user.default\n");
+ #endif
++		} else if ((t->options & TAR_REQUIRE_METADATA) && errno != ENODATA) {
++			return -1;
+ 		}
+ 		if (getxattr(realname, "user.inode_cache", NULL, 0) >= 0)
+ 		{
+@@ -224,6 +243,8 @@ tar_append_file(TAR *t, const char *realname, const char *savename)
+ #if 1 //def DEBUG
+ 			LOG("storing xattr user.inode_cache\n");
+ #endif
++		} else if ((t->options & TAR_REQUIRE_METADATA) && errno != ENODATA) {
++			return -1;
+ 		}
+ 		if (getxattr(realname, "user.inode_code_cache", NULL, 0) >= 0)
+ 		{
+@@ -231,6 +252,8 @@ tar_append_file(TAR *t, const char *realname, const char *savename)
+ #if 1 //def DEBUG
+ 			LOG("storing xattr user.inode_code_cache\n");
+ #endif
++		} else if ((t->options & TAR_REQUIRE_METADATA) && errno != ENODATA) {
++			return -1;
+ 		}
+ 	}
+ 
+@@ -304,20 +327,8 @@ tar_append_file(TAR *t, const char *realname, const char *savename)
+ 	if (t->options & TAR_VERBOSE)
+ 		LOG("%s\n", th_get_pathname(t));
+ 
+-#if defined(O_BINARY)
+-        filefd = open(realname, O_RDONLY|O_BINARY);
+-#else
+-        filefd = open(realname, O_RDONLY);
+-#endif
+-        if (filefd == -1)
+-        {
+-                if (errno == ENOKEY) {
+-                        LOG("Required key not available, skipping file\n");
+-			close(filefd);
+-			return 0;
+-                }
+-        }
+-	close(filefd);
++/* Archive links as links; never open their targets here.
++         * Regular-file content errors are fatal in tar_append_regfile. */
+ #ifdef DEBUG
+ 	LOG("tar_append_file(): writing header");
+ #endif
+@@ -404,8 +415,12 @@ tar_append_regfile(TAR *t, const char *realname)
+ 	if (i > 0)
+ 	{
+ 		j = read(filefd, &block, i);
+-		if (j == -1)
++		if (j != i)
++		{
++			if (j != -1)
++				errno = EINVAL;
+ 			goto fail;
++		}
+ 		memset(&(block[i]), 0, T_BLOCKSIZE - i);
+ 		if (tar_block_write(t, &block) == -1)
+ 			goto fail;
+diff --git a/libtar/block.c b/libtar/block.c
+index aaedc8e..732e799 100755
+--- a/libtar/block.c
++++ b/libtar/block.c
+@@ -352,29 +352,24 @@ th_read(TAR *t)
+ 			} // end android user.inode_code_cache xattr
+ 
+ #ifdef USE_FSCRYPT
+-			start = strstr(buf, FSCRYPT_TAG);
+-			if (start && start+FSCRYPT_TAG_LEN < buf+len) {
+-				t->th_buf.fep = (fscrypt_policy*)malloc(sizeof(fscrypt_policy));
++			start = memmem(buf, sz, FSCRYPT_TAG, FSCRYPT_TAG_LEN);
++			if (start) {
++				start += FSCRYPT_TAG_LEN;
++				if (start >= buf + sz || *start++ != '0' ||
++				    (size_t)(buf + sz - start) <= sizeof(*t->th_buf.fep) ||
++				    (uint8_t)*start != TAR_FSCRYPT_VERSION ||
++				    start[sizeof(*t->th_buf.fep)] != '\n') {
++					LOG("Invalid or unsupported fscrypt policy record\n");
++					errno = EINVAL;
++					return -1;
++				}
++				free(t->th_buf.fep);
++				t->th_buf.fep = malloc(sizeof(*t->th_buf.fep));
+ 				if (!t->th_buf.fep) {
+ 					LOG("malloc failed for fscrypt policy\n");
+ 					return -1;
+ 				}
+-				start += FSCRYPT_TAG_LEN;
+-				if (*start == '0') {
+-					start++;
+-					memcpy(get_policy(t->th_buf.fep), start, fscrypt_policy_size(t->th_buf.fep));
+-#ifdef DEBUG
+-					uint8_t version;
+-					char content[50];
+-					memcpy(&version, start, sizeof(version));
+-					get_policy_content(t->th_buf.fep, content);
+-					LOG("version: %u\n", version);
+-					LOG("    th_read(): FSCrypt policy detected: %s\n", content);
+-#endif
+-				}
+-				else {
+-					LOG("     invalid fscrypt header found\n");
+-				}
++				memcpy(t->th_buf.fep, start, sizeof(*t->th_buf.fep));
+ 			}
+ #endif // USE_FSCRYPT
+ 		}
+@@ -580,12 +575,7 @@ th_write(TAR *t)
+ 	{
+ 		/* setup size - EXT header has format "*size of this whole tag as ascii numbers* *space* *version code* *content* *newline* */
+ 		//                                                       size   newline
+-		uint8_t size, *descriptor;
+-		size = fscrypt_policy_size(t->th_buf.fep);
+-		descriptor = get_policy_descriptor(t->th_buf.fep);
+-#ifdef DEBUG
+-		LOG("th_write(): using fscrypt_policy %s\n", descriptor);
+-#endif
++		const size_t size = sizeof(*t->th_buf.fep);
+ 		sz = FSCRYPT_TAG_LEN + size + 1 + 3  +    1;
+ 		if(sz >= 100) // another ascci digit for size
+ 			++sz;
+@@ -601,7 +591,7 @@ th_write(TAR *t)
+ 			total_sz += sz;
+ 
+ 		snprintf(ptr, T_BLOCKSIZE, "%d "FSCRYPT_TAG"0", (int)sz);
+-		memcpy(ptr + sz - size - 1, get_policy(t->th_buf.fep), size);
++		memcpy(ptr + sz - size - 1, t->th_buf.fep, size);
+ 		char *nlptr = ptr + sz - 1;
+ 		*nlptr = '\n';
+ 		ptr += sz;
+diff --git a/libtar/extract.c b/libtar/extract.c
+index be989b0..7fd4820 100755
+--- a/libtar/extract.c
++++ b/libtar/extract.c
+@@ -169,8 +169,14 @@ tar_extract_file(TAR *t, const char *realname, const char *prefix, const int *pr
+ #ifdef DEBUG
+ 		LOG("tar_extract_file(): restoring SELinux context %s to file %s\n", t->th_buf.selinux_context, realname);
+ #endif
+-		if (lsetfilecon(realname, t->th_buf.selinux_context) < 0)
++		if (lsetfilecon(realname, t->th_buf.selinux_context) < 0) {
++			int error = errno;
+ 			fprintf(stderr, "tar_extract_file(): failed to restore SELinux context %s to file %s !!!\n", t->th_buf.selinux_context, realname);
++			if (t->options & TAR_REQUIRE_METADATA) {
++				errno = error;
++				return -1;
++			}
++		}
+ 	}
+ 
+ 	if((t->options & TAR_STORE_POSIX_CAP) && t->th_buf.has_cap_data)
+@@ -179,8 +185,14 @@ tar_extract_file(TAR *t, const char *realname, const char *prefix, const int *pr
+ 		LOG("tar_extract_file(): restoring posix capabilities to file %s\n", realname);
+ 		print_caps(&t->th_buf.cap_data);
+ #endif
+-		if (setxattr(realname, XATTR_NAME_CAPS, &t->th_buf.cap_data, sizeof(struct vfs_cap_data), 0) < 0)
++		if (setxattr(realname, XATTR_NAME_CAPS, &t->th_buf.cap_data, sizeof(struct vfs_cap_data), 0) < 0) {
++			int error = errno;
+ 			fprintf(stderr, "tar_extract_file(): failed to restore posix capabilities to file %s !!!\n", realname);
++			if (t->options & TAR_REQUIRE_METADATA) {
++				errno = error;
++				return -1;
++			}
++		}
+ 	}
+ 
+ #ifdef LIBTAR_FILE_HASH
+@@ -555,40 +567,23 @@ tar_extract_dir(TAR *t, const char *realname)
+ 	}
+ 
+ #ifdef USE_FSCRYPT
+-	if(t->th_buf.fep != NULL)
++	if (t->th_buf.fep != NULL)
+ 	{
+-		uint8_t hex_size, size, *descriptor;
+-		hex_size = get_policy_size(t->th_buf.fep, true);
+-		size = get_policy_size(t->th_buf.fep, false);
+-		descriptor = get_policy_descriptor(t->th_buf.fep);
+-		char policy_hex[hex_size];
+-#ifdef DEBUG
+-		bytes_to_hex(descriptor, size, policy_hex);
+-		LOG("tar_extract_dir(): restoring fscrypt policy %s to dir %s\n", (char *)policy_hex, realname);
+-#endif
+-		bool policy_lookup_error = false;
+-		uint8_t binary_policy[size];
+-		memset(&binary_policy, 0, size);
+-
+-		if (!lookup_ref_tar(t->th_buf.fep, &binary_policy[0])) {
+-			LOG("error looking up fscrypt policy for '%s' - %s\n", realname, descriptor);
+-			policy_lookup_error = true;
++		uint8_t reference[TAR_FSCRYPT_KEY_SIZE + 1] = {0};
++		uint8_t key[TAR_FSCRYPT_KEY_SIZE] = {0};
++		uint8_t *descriptor = tar_fscrypt_key(t->th_buf.fep);
++		memcpy(reference, descriptor, TAR_FSCRYPT_KEY_SIZE);
++		if (!lookup_ref_tar(reference, key)) {
++			LOG("Unable to resolve fscrypt policy for '%s'\n", realname);
++			errno = EINVAL;
++			return -1;
++		}
++		memcpy(descriptor, key, sizeof(key));
++		if (!fscrypt_policy_set_struct(realname, t->th_buf.fep)) {
++			LOG("Unable to restore fscrypt policy for '%s'\n", realname);
++			return -1;
+ 		}
+-		memcpy(descriptor, binary_policy, size);
+-		bytes_to_hex(descriptor, size, policy_hex);
+-		if (!policy_lookup_error)
+-		{
+-			LOG("attempting to restore policy: %s\n", policy_hex);
+-			if (!fscrypt_policy_set_struct(realname, t->th_buf.fep))
+-			{
+-				LOG("tar_extract_file(): failed to restore fscrypt policy to dir '%s' '%s'!!!\n", realname, policy_hex);
+-				//return -1; // This may not be an error in some cases, so log and ignore
+-			}
+-		} else
+-			LOG("No policy was found. Continuing restore.");
+ 	}
+-	else
+-		LOG("NULL FSCRYPT\n");
+ #endif
+ 
+ 	return 0;
+diff --git a/libtar/handle.c b/libtar/handle.c
+index a26c094..bab2909 100644
+--- a/libtar/handle.c
++++ b/libtar/handle.c
+@@ -124,6 +124,9 @@ tar_close(TAR *t)
+ 					: (libtar_freefunc_t)tar_dev_free));
+ 	if (t->th_pathname != NULL)
+ 		free(t->th_pathname);
++#ifdef USE_FSCRYPT
++	free(t->th_buf.fep);
++#endif
+ 	free(t);
+ 
+ 	return i;
+diff --git a/libtar/libtar.h b/libtar/libtar.h
+index f42b201..3391884 100755
+--- a/libtar/libtar.h
++++ b/libtar/libtar.h
+@@ -21,7 +21,26 @@
+ #include "libtar_listhash.h"
+ 
+ #ifdef USE_FSCRYPT
++#include <stdint.h>
+ #include "fscrypt_policy.h"
++
++#ifdef USE_FSCRYPT_POLICY_V1
++typedef struct fscrypt_policy_v1 tar_fscrypt_policy;
++#define TAR_FSCRYPT_VERSION FSCRYPT_POLICY_V1
++#define TAR_FSCRYPT_KEY_SIZE FSCRYPT_KEY_DESCRIPTOR_SIZE
++static inline uint8_t *tar_fscrypt_key(tar_fscrypt_policy *policy)
++{
++	return policy->master_key_descriptor;
++}
++#else
++typedef struct fscrypt_policy_v2 tar_fscrypt_policy;
++#define TAR_FSCRYPT_VERSION FSCRYPT_POLICY_V2
++#define TAR_FSCRYPT_KEY_SIZE FSCRYPT_KEY_IDENTIFIER_SIZE
++static inline uint8_t *tar_fscrypt_key(tar_fscrypt_policy *policy)
++{
++	return policy->master_key_identifier;
++}
++#endif
+ #endif
+ 
+ #ifdef __cplusplus
+@@ -71,7 +90,7 @@ struct tar_header
+ 	char *gnu_longlink;
+ 	char *selinux_context;
+ #ifdef USE_FSCRYPT
+-	fscrypt_policy  *fep;
++	tar_fscrypt_policy *fep;
+ #endif
+ 	int has_cap_data;
+ 	struct vfs_cap_data cap_data;
+@@ -125,10 +144,12 @@ TAR;
+ 
+ #ifdef USE_FSCRYPT
+ #define TAR_STORE_FSCRYPT_POL 512 /* store fscrypt crypto policy */
++#define TAR_REQUIRE_FSCRYPT_POL 4096 /* fail if a directory's policy cannot be read or represented */
+ #endif
+ 
+ #define TAR_STORE_POSIX_CAP	1024	/* store posix file capabilities */
+ #define TAR_STORE_ANDROID_USER_XATTR	2048	/* store android user.* xattr */
++#define TAR_REQUIRE_METADATA 8192 /* fail on unreadable source metadata */
+ 
+ /* this is obsolete - it's here for backwards-compatibility only */
+ #define TAR_IGNORE_MAGIC	0
+diff --git a/libtar/output.c b/libtar/output.c
+index 3f57c83..fd2b080 100755
+--- a/libtar/output.c
++++ b/libtar/output.c
+@@ -61,8 +61,8 @@ th_print(TAR *t)
+ 	LOG("  gnu_longlink = \"%s\"\n",
+ 	       (t->th_buf.gnu_longlink ? t->th_buf.gnu_longlink : "[NULL]"));
+ #ifdef USE_FSCRYPT
+-	LOG("  fep = \"%s\"\n",
+-		(t->th_buf.fep ? get_policy_descriptor(t->th_buf.fep) : (uint8_t*) "[NULL]"));
++	LOG("  fep = \"%.*s\"\n", TAR_FSCRYPT_KEY_SIZE,
++	    t->th_buf.fep ? (const char *)tar_fscrypt_key(t->th_buf.fep) : "[NULL]");
+ #endif
+ }
+ 
+diff --git a/minuitwrp/graphics_drm.cpp b/minuitwrp/graphics_drm.cpp
+index a02613f..d9dec25 100644
+--- a/minuitwrp/graphics_drm.cpp
++++ b/minuitwrp/graphics_drm.cpp
+@@ -163,7 +163,7 @@ static drm_surface *drm_create_surface(int width, int height) {
+     printf("setting DRM_FORMAT_XBGR8888 and GGL_PIXEL_FORMAT_RGBA_8888\n");
+ #else
+     format = DRM_FORMAT_RGB565;
+-    base_format = GGL_PIXEL_FORMAT_BGRA_8888;
++    base_format = GGL_PIXEL_FORMAT_RGB_565;
+     printf("setting DRM_FORMAT_RGB565 and GGL_PIXEL_FORMAT_RGB_565\n");
+ #endif
+ 
+diff --git a/mtp/ffs/MtpFfsHandle.cpp b/mtp/ffs/MtpFfsHandle.cpp
+index a46cf1f..e99b3cc 100644
+--- a/mtp/ffs/MtpFfsHandle.cpp
++++ b/mtp/ffs/MtpFfsHandle.cpp
+@@ -85,10 +85,22 @@ void MtpFfsHandle::closeEndpoints() {
+ }
+ 
+ bool MtpFfsHandle::openEndpoints(bool ptp) {
++	// run() is reused by TWRP after disconnect; close() also closes ep0.
++	if (mControl < 0) {
++		mControl.reset(TEMP_FAILURE_RETRY(open(ptp ? FFS_PTP_EP0 : FFS_MTP_EP0, O_RDWR)));
++		if (mControl < 0) {
++			MTPE("cannot reopen control ep: errno=%d (%s)\n", errno, strerror(errno));
++			return false;
++		}
++		if (!writeDescriptors(ptp)) {
++			closeConfig();
++			return false;
++		}
++	}
+ 	if (mBulkIn < 0) {
+ 		mBulkIn.reset(TEMP_FAILURE_RETRY(open(ptp ? FFS_PTP_EP_IN : FFS_MTP_EP_IN, O_RDWR)));
+ 		if (mBulkIn < 0) {
+-			MTPE("cannot open bulk in ep\n");
++			MTPE("cannot open bulk in ep: errno=%d (%s)\n", errno, strerror(errno));
+ 			return false;
+ 		}
+ 	}
+@@ -96,7 +108,7 @@ bool MtpFfsHandle::openEndpoints(bool ptp) {
+ 	if (mBulkOut < 0) {
+ 		mBulkOut.reset(TEMP_FAILURE_RETRY(open(ptp ? FFS_PTP_EP_OUT : FFS_MTP_EP_OUT, O_RDWR)));
+ 		if (mBulkOut < 0) {
+-			MTPE("cannot open bulk out ep\n");
++			MTPE("cannot open bulk out ep: errno=%d (%s)\n", errno, strerror(errno));
+ 			return false;
+ 		}
+ 	}
+@@ -104,7 +116,7 @@ bool MtpFfsHandle::openEndpoints(bool ptp) {
+ 	if (mIntr < 0) {
+ 		mIntr.reset(TEMP_FAILURE_RETRY(open(ptp ? FFS_PTP_EP_INTR : FFS_MTP_EP_INTR, O_RDWR)));
+ 		if (mIntr < 0) {
+-			MTPE("cannot open intr ep\n");
++			MTPE("cannot open intr ep: errno=%d (%s)\n", errno, strerror(errno));
+ 			return false;
+ 		}
+ 	}
+@@ -297,7 +309,11 @@ int MtpFfsHandle::start(bool ptp) {
+ }
+ 
+ void MtpFfsHandle::close() {
+-	io_destroy(mCtx);
++	if (mCtx) {
++		io_destroy(mCtx);
++		mCtx = 0;
++	}
++	mEventFd.reset();
+ 	closeEndpoints();
+ 	closeConfig();
+ }
+diff --git a/mtp/ffs/MtpFfsHandle.h b/mtp/ffs/MtpFfsHandle.h
+index 8c3725e..ada69e5 100644
+--- a/mtp/ffs/MtpFfsHandle.h
++++ b/mtp/ffs/MtpFfsHandle.h
+@@ -65,7 +65,7 @@ protected:
+ 	android::base::unique_fd mBulkOut;
+ 	android::base::unique_fd mIntr;
+ 
+-	aio_context_t mCtx;
++	aio_context_t mCtx = 0;
+ 
+ 	android::base::unique_fd mEventFd;
+ 	struct pollfd mPollFds[2];
+diff --git a/mtp/ffs/MtpServer.cpp b/mtp/ffs/MtpServer.cpp
+index 2a9e305..e95a660 100755
+--- a/mtp/ffs/MtpServer.cpp
++++ b/mtp/ffs/MtpServer.cpp
+@@ -168,15 +168,7 @@ void MtpServer::run() {
+ 	if (mHandle->start(mPtp)) {
+ 		MTPE("Failed to start usb driver!\n");
+ 		mHandle->close();
+-        int controlFd = open(FFS_MTP_EP0, O_RDWR);
+-        bool ffs_ok = access(FFS_MTP_EP0, W_OK) == 0;
+-        if (ffs_ok) {
+-            bool aio_compat = android::base::GetBoolProperty("sys.usb.ffs.aio_compat", false);
+-            mHandle = aio_compat ? new MtpFfsCompatHandle(controlFd) : new MtpFfsHandle(controlFd);
+-            mHandle->writeDescriptors(mPtp);
+-        } else {
+-            mHandle = new MtpDevHandle(controlFd);
+-        }
++		// The same handle reopens its control endpoint on the next start().
+ 		return;
+ 	}
+ 
+@@ -247,6 +239,11 @@ void MtpServer::run() {
+ 		}
+ 	}
+ 
++	// Storage notifications use this mutex; no event may use a closing handle.
++	std::lock_guard<std::mutex> lg(mMutex);
++	mSessionOpen = false;
++	mSessionID = 0;
++	mSendObjectHandle = kInvalidObjectHandle;
+ 	// commit any open edits
+ 	int count = mObjectEditList.size();
+ 	for (int i = 0; i < count; i++) {
+diff --git a/mtp/ffs/mtp_MtpDatabase.cpp b/mtp/ffs/mtp_MtpDatabase.cpp
+index 399a60e..b1d818e 100755
+--- a/mtp/ffs/mtp_MtpDatabase.cpp
++++ b/mtp/ffs/mtp_MtpDatabase.cpp
+@@ -1,3 +1,5 @@
++#include <fstream>
++#include <android-base/properties.h>
+ /*
+  * Copyright (C) 2010 The Android Open Source Project
+  *
+@@ -43,6 +45,33 @@
+ #include "mtp.h"
+ #include "mtp_MtpDatabase.hpp"
+ 
++
++// Device-owned icon: never read shared storage or accept a host-selected path.
++static bool ReadMtpDeviceIcon(std::vector<uint8_t>& bytes) {
++  // Sony pdx256 stock framework overlay: 186 black, 187 green, 188 purple.
++  // Only fixed bundled paths; never interpret another model's color numbering.
++  const char* icon_path = "/twres/device.ico";
++  if (android::base::GetProperty("ro.product.device", "") == "pdx256") {
++    const auto color = android::base::GetProperty("ro.boot.hardware.color", "");
++    if (color == "187") icon_path = "/twres/device-pdx256-187.ico";
++    else if (color == "188") icon_path = "/twres/device-pdx256-188.ico";
++    // 186 and unrecognized values retain the original black/default icon.
++  }
++  std::ifstream input(icon_path, std::ios::binary | std::ios::ate);
++  if (!input) {
++    input.clear();
++    input.open("/twres/device.ico", std::ios::binary | std::ios::ate);
++  }
++  if (!input) return false;
++  const auto size = input.tellg();
++  if (size < 6 || size > 262144) return false;
++  bytes.resize(static_cast<size_t>(size));
++  input.seekg(0);
++  if (!input.read(reinterpret_cast<char*>(bytes.data()), bytes.size())) return false;
++  return bytes[0] == 0 && bytes[1] == 0 && bytes[2] == 1 && bytes[3] == 0 &&
++      (bytes[4] != 0 || bytes[5] != 0);
++}
++
+ IMtpDatabase::IMtpDatabase() {
+   storagenum = 0;
+   count = -1;
+@@ -55,9 +84,9 @@ IMtpDatabase::~IMtpDatabase() {
+   }
+ }
+ 
+-int IMtpDatabase::DEVICE_PROPERTIES[3] = { MTP_DEVICE_PROPERTY_SYNCHRONIZATION_PARTNER,
++int IMtpDatabase::DEVICE_PROPERTIES[5] = { MTP_DEVICE_PROPERTY_SYNCHRONIZATION_PARTNER,
+ 										   MTP_DEVICE_PROPERTY_DEVICE_FRIENDLY_NAME,
+-										   MTP_DEVICE_PROPERTY_IMAGE_SIZE };
++										   MTP_DEVICE_PROPERTY_IMAGE_SIZE, MTP_DEVICE_PROPERTY_PERCEIVED_DEVICE_TYPE, MTP_DEVICE_PROPERTY_DEVICE_ICON };
+ 
+ int IMtpDatabase::FILE_PROPERTIES[10] = {
+   // NOTE must match beginning of AUDIO_PROPERTIES, VIDEO_PROPERTIES
+@@ -455,6 +484,17 @@ MtpResponseCode IMtpDatabase::setObjectPropertyValue(MtpObjectHandle handle,
+ 
+ MtpResponseCode IMtpDatabase::getDevicePropertyValue(MtpDeviceProperty property,
+ 													 MtpDataPacket& packet) {
++  if (property == MTP_DEVICE_PROPERTY_DEVICE_ICON) {
++    std::vector<uint8_t> icon;
++    if (!ReadMtpDeviceIcon(icon)) return MTP_RESPONSE_GENERAL_ERROR;
++    packet.putAUInt8(icon.data(), static_cast<int>(icon.size()));
++    MTPD("DeviceIcon returned %zu bytes\n", icon.size());
++    return MTP_RESPONSE_OK;
++  }
++  if (property == MTP_DEVICE_PROPERTY_PERCEIVED_DEVICE_TYPE) {
++    packet.putUInt32(android::base::GetUintProperty<uint32_t>("sys.usb.mtp.device_type", 0));
++    return MTP_RESPONSE_OK;
++  }
+   int type, result = 0;
+   char prop_value[PROPERTY_VALUE_MAX];
+   MTPD("property %s\n", MtpDebug::getDevicePropCodeName(property));
+@@ -483,7 +523,7 @@ MtpResponseCode IMtpDatabase::getDevicePropertyValue(MtpDeviceProperty property,
+   }
+ 
+   long longValue = 0;
+-  property_get("ro.build.product", prop_value, "unknown manufacturer");
++  property_get("ro.product.model", prop_value, "Android device");
+   switch (type) {
+ 	case MTP_TYPE_INT8: {
+ 	  MTPD("MTP_TYPE_INT8\n");
+@@ -554,6 +594,8 @@ MtpResponseCode IMtpDatabase::setDevicePropertyValue(__attribute__((unused))
+ 													 MtpDeviceProperty property,
+ 													 __attribute__((unused))
+ 													 MtpDataPacket& packet) {
++  if (property == MTP_DEVICE_PROPERTY_DEVICE_ICON ||
++      property == MTP_DEVICE_PROPERTY_PERCEIVED_DEVICE_TYPE) return MTP_RESPONSE_ACCESS_DENIED;
+   MTPE("IMtpDatabase::setDevicePropertyValue not implemented, returning 0\n");
+   return 0;
+ }
+@@ -661,6 +703,8 @@ static const PropertyTableEntry kDevicePropertyTable[] = {
+   { MTP_DEVICE_PROPERTY_SYNCHRONIZATION_PARTNER, MTP_TYPE_STR },
+   { MTP_DEVICE_PROPERTY_DEVICE_FRIENDLY_NAME, MTP_TYPE_STR },
+   { MTP_DEVICE_PROPERTY_IMAGE_SIZE, MTP_TYPE_STR },
++  { MTP_DEVICE_PROPERTY_PERCEIVED_DEVICE_TYPE, MTP_TYPE_UINT32 },
++  { MTP_DEVICE_PROPERTY_DEVICE_ICON, MTP_TYPE_AUINT8 },
+ };
+ 
+ bool IMtpDatabase::getObjectPropertyInfo(MtpObjectProperty property, int& type) {
+@@ -759,6 +803,25 @@ MtpProperty* IMtpDatabase::getObjectPropertyDesc(MtpObjectProperty property,
+ MtpProperty* IMtpDatabase::getDevicePropertyDesc(MtpDeviceProperty property) {
+   MtpProperty* result = NULL;
+   bool writable = false;
++  if (property == MTP_DEVICE_PROPERTY_DEVICE_ICON) {
++    std::vector<uint8_t> icon;
++    if (!ReadMtpDeviceIcon(icon)) return nullptr;
++    result = new MtpProperty(property, MTP_TYPE_AUINT8, false);
++    result->mDefaultArrayLength = result->mCurrentArrayLength = icon.size();
++    result->mDefaultArrayValues = new MtpPropertyValue[icon.size()]();
++    result->mCurrentArrayValues = new MtpPropertyValue[icon.size()]();
++    for (size_t i = 0; i < icon.size(); ++i) {
++      result->mDefaultArrayValues[i].u.u8 = icon[i];
++      result->mCurrentArrayValues[i].u.u8 = icon[i];
++    }
++    return result;
++  }
++  if (property == MTP_DEVICE_PROPERTY_PERCEIVED_DEVICE_TYPE) {
++    result = new MtpProperty(property, MTP_TYPE_UINT32, false);
++    result->mCurrentValue.u.u32 = android::base::GetUintProperty<uint32_t>("sys.usb.mtp.device_type", 0);
++    result->mDefaultValue.u.u32 = result->mCurrentValue.u.u32;
++    return result;
++  }
+   switch (property) {
+ 	case MTP_DEVICE_PROPERTY_SYNCHRONIZATION_PARTNER:
+ 	case MTP_DEVICE_PROPERTY_DEVICE_FRIENDLY_NAME:
+diff --git a/mtp/ffs/mtp_MtpDatabase.hpp b/mtp/ffs/mtp_MtpDatabase.hpp
+index 4b18898..9b5f1f4 100755
+--- a/mtp/ffs/mtp_MtpDatabase.hpp
++++ b/mtp/ffs/mtp_MtpDatabase.hpp
+@@ -46,7 +46,7 @@ private:
+ 	int* getSupportedObjectProperties(int format);
+ 
+ 	static int FILE_PROPERTIES[10];
+-	static int DEVICE_PROPERTIES[3];
++	static int DEVICE_PROPERTIES[5];
+ 	static int AUDIO_PROPERTIES[19];
+ 	static int VIDEO_PROPERTIES[15];
+ 	static int IMAGE_PROPERTIES[12];
+diff --git a/mtp/ffs/mtp_MtpServer.cpp b/mtp/ffs/mtp_MtpServer.cpp
+index ce890d1..bfba9c2 100755
+--- a/mtp/ffs/mtp_MtpServer.cpp
++++ b/mtp/ffs/mtp_MtpServer.cpp
+@@ -40,7 +40,7 @@
+ 
+ void twmtp_MtpServer::set_device_info() {
+ 	char property[512];
+-	property_get("ro.build.product", property, "unknown manufacturer");
++	property_get("ro.product.manufacturer", property, "unknown manufacturer");
+ 	mtpinfo.deviceInfoManufacturer = MtpStringBuffer(property);
+ 	property_get("ro.product.model", property, "unknown model");
+ 	mtpinfo.deviceInfoModel = MtpStringBuffer(property);
+diff --git a/partition.cpp b/partition.cpp
+index 8c53567..527dc2b 100755
+--- a/partition.cpp
++++ b/partition.cpp
+@@ -16,6 +16,9 @@
+ 	along with TWRP.  If not, see <http://www.gnu.org/licenses/>.
+ */
+ 
++#if defined(TW_INCLUDE_CRYPTO) && defined(TW_EXCLUDE_FDE)
++#include <libdm/dm.h>
++#endif
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -249,9 +252,11 @@ TWPartition::TWPartition() {
+ 	Used = 0;
+ 	Free = 0;
+ 	Backup_Size = 0;
++	Backup_Size_Valid = false;
+ 	Can_Be_Encrypted = false;
+ 	Is_Encrypted = false;
+ 	Is_Decrypted = false;
++	Sony_FBE_Adopted = false;
+ 	Is_FBE = false;
+ 	Mount_To_Decrypt = false;
+ 	Decrypted_Block_Device = "";
+@@ -708,6 +713,9 @@ void TWPartition::Setup_Data_Partition(bool Display_Error) {
+ 	} else if (!Mount(false)) {
+ 		if (Is_Present) {
+ 			if (Key_Directory.empty()) {
++#ifdef TW_EXCLUDE_FDE
++				LOGERR("Unable to mount /data for file-based encryption.\n");
++#else
+ 				set_partition_data(Use_Original_Path ? Original_Path.c_str() : Actual_Block_Device.c_str(), Crypto_Key_Location.c_str());
+ 				if (cryptfs_check_footer() == 0) {
+ 					Is_Encrypted = true;
+@@ -724,6 +732,7 @@ void TWPartition::Setup_Data_Partition(bool Display_Error) {
+ 				} else {
+ 					gui_err("mount_data_footer=Could not mount /data and unable to find crypto footer.");
+ 				}
++#endif
+ 			} else {
+ 				Is_Encrypted = true;
+ 				Is_Decrypted = false;
+@@ -777,14 +786,7 @@ void TWPartition::Set_FBE_Status() {
+ 	}
+ }
+ 
+-bool TWPartition::Decrypt_FBE_DE() {
+-	if (TWFunc::Path_Exists("/data/unencrypted/key/version")) {
+-		DataManager::SetValue(TW_IS_FBE, 1);
+-		PartitionManager.Set_Crypto_State();
+-		PartitionManager.Set_Crypto_Type("file");
+-		LOGINFO("File Based Encryption is present\n");
+-#ifdef TW_INCLUDE_FBE
+-	Is_FBE = true;
++void TWPartition::Setup_FBE_Exclusions() {
+ 	ExcludeAll(Mount_Point + "/convert_fbe");
+ 	ExcludeAll(Mount_Point + "/unencrypted");
+ 	ExcludeAll(Mount_Point + "/misc/vold/user_keys");
+@@ -802,6 +804,17 @@ bool TWPartition::Decrypt_FBE_DE() {
+ 	ExcludeAll(Mount_Point + "/cache");
+ 	ExcludeAll(Mount_Point + "/per_boot"); // removed each boot by init
+ 	ExcludeAll(Mount_Point + "/gsi"); // cow devices
++}
++
++bool TWPartition::Decrypt_FBE_DE() {
++	if (TWFunc::Path_Exists("/data/unencrypted/key/version")) {
++		DataManager::SetValue(TW_IS_FBE, 1);
++		PartitionManager.Set_Crypto_State();
++		PartitionManager.Set_Crypto_Type("file");
++		LOGINFO("File Based Encryption is present\n");
++#ifdef TW_INCLUDE_FBE
++	Is_FBE = true;
++	Setup_FBE_Exclusions();
+ 
+ 	int retry_count = 3;
+ 	while (!android::keystore::Decrypt_DE() && --retry_count)
+@@ -1255,7 +1268,8 @@ void TWPartition::Setup_AndSec(void) {
+ 	Mount_Storage_Retry(true);
+ }
+ 
+-void TWPartition::Setup_Data_Media() {
++void TWPartition::Setup_Data_Media(bool Preserve_Mount) {
++	const bool keep_mounted = Preserve_Mount && Is_Mounted();
+ 	LOGINFO("Setting up '%s' as data/media emulated storage.\n", Mount_Point.c_str());
+ 	if (Storage_Name.empty() || Storage_Name == "Data")
+ 		Storage_Name = "Internal Storage";
+@@ -1281,7 +1295,7 @@ void TWPartition::Setup_Data_Media() {
+ 			Storage_Path = Mount_Point + "/media/0";
+ 			Symlink_Path = Storage_Path;
+ 			DataManager::SetValue(TW_INTERNAL_PATH, Mount_Point + "/media/0");
+-			UnMount(true);
++			if (!keep_mounted) UnMount(true);
+ 		}
+ 		DataManager::SetValue("tw_has_internal", 1);
+ 		DataManager::SetValue("tw_has_data_media", 1);
+@@ -1325,7 +1339,7 @@ void TWPartition::Setup_Data_Media() {
+ 		if (Mount(true) && TWFunc::Path_Exists(Mount_Point + "/media/0")) {
+ 			Storage_Path = Mount_Point + "/media/0";
+ 			Symlink_Path = Storage_Path;
+-			UnMount(true);
++			if (!keep_mounted) UnMount(true);
+ 		}
+ 	}
+ 	ExcludeAll(Mount_Point + "/media");
+@@ -1572,6 +1586,11 @@ bool TWPartition::Is_File_System_Writable(void) {
+ }
+ 
+ bool TWPartition::Mount(bool Display_Error) {
++    if (Sony_FBE_Adopted && !Is_Decrypted) {
++        if (Display_Error)
++            gui_err("decrypt_before_mount=Unlock Data before mounting it.");
++        return false;
++    }
+ 	int exfat_mounted = 0;
+ 	unsigned int flags = Mount_Flags;
+ 
+@@ -1722,6 +1741,8 @@ bool TWPartition::Bind_Mount(bool Display_Error) {
+ 	return true;
+ }
+ 
++extern void XperiaDataUnmounted();
++
+ bool TWPartition::UnMount(bool Display_Error) {
+ 	if (Is_Mounted()) {
+ 		int never_unmount_system;
+@@ -1733,25 +1754,64 @@ bool TWPartition::UnMount(bool Display_Error) {
+ 		if (Is_Storage && MTP_Storage_ID > 0)
+ 			PartitionManager.Remove_MTP_Storage(MTP_Storage_ID);
+ 
+-		if (!Symlink_Mount_Point.empty())
+-			umount(Symlink_Mount_Point.c_str());
++        bool media_unbound = false;
++        if (!Symlink_Mount_Point.empty()) {
++            const int result = umount(Symlink_Mount_Point.c_str());
++            media_unbound = result == 0;
++            if (Sony_FBE_Adopted && result != 0 && errno != EINVAL && errno != ENOENT) {
++                if (Is_Storage && MTP_Storage_ID > 0)
++                    PartitionManager.Add_MTP_Storage(MTP_Storage_ID);
++                return false;
++            }
++        }
+ 
+ 		umount(Mount_Point.c_str());
+ 		if (Is_Mounted()) {
++            const int unmount_error = errno;
++            if (Sony_FBE_Adopted) {
++                if (media_unbound) Bind_Mount(false);
++                if (Is_Storage && MTP_Storage_ID > 0)
++                    PartitionManager.Add_MTP_Storage(MTP_Storage_ID);
++            }
++            errno = unmount_error;
+ 			if (Display_Error)
+ 				gui_msg(Msg(msg::kError, "fail_unmount=Failed to unmount '{1}' ({2})")(Mount_Point)(strerror(errno)));
+ 			else
+ 				LOGINFO("Unable to unmount '%s'\n", Mount_Point.c_str());
+ 			return false;
+-		} else {
+-			return true;
+ 		}
+-	} else {
+-		return true;
+ 	}
++    if (Sony_FBE_Adopted && Is_Decrypted) {
++        Is_Decrypted = false;
++        Is_Storage = false;
++        Can_Be_Backed_Up = false;
++        Size = Used = Free = Backup_Size = 0;
++        DataManager::SetValue(TW_IS_DECRYPTED, 0);
++        DataManager::SetValue(TW_IS_ENCRYPTED, 1);
++        DataManager::SetValue("tw_has_internal", 0);
++        XperiaDataUnmounted();
++    }
++    return true;
+ }
+ 
+ bool TWPartition::ReMount(bool Display_Error) {
++	// FBE v2 keys belong to the mounted filesystem. A full unmount drops
++	// them; changing access flags must not silently discard an unlocked session.
++	if (Is_FBE && Is_Decrypted && Is_Mounted()) {
++		unsigned long flags = Mount_Flags | MS_REMOUNT;
++		if (Mount_Read_Only)
++			flags |= MS_RDONLY;
++		else
++			flags &= ~MS_RDONLY;
++		if (mount(Actual_Block_Device.c_str(), Mount_Point.c_str(),
++		          Current_File_System.c_str(), flags, Mount_Options.c_str()) == 0)
++			return true;
++		if (Display_Error)
++			LOGERR("Unable to remount FBE partition '%s': %s\n", Mount_Point.c_str(), strerror(errno));
++		else
++			LOGINFO("Unable to remount FBE partition '%s': %s\n", Mount_Point.c_str(), strerror(errno));
++		return false;
++	}
+ 	if (UnMount(Display_Error))
+ 		return Mount(Display_Error);
+ 	return false;
+@@ -2160,7 +2220,12 @@ bool TWPartition::Wipe_Encryption() {
+ 	if (!UnMount(true))
+ 		return false;
+ 	if (Is_Decrypted && !Decrypted_Block_Device.empty()) {
+-		if (delete_crypto_blk_dev((char*)("userdata")) != 0) {
++#ifdef TW_EXCLUDE_FDE
++		const bool removed = android::dm::DeviceMapper::Instance().DeleteDevice("userdata");
++#else
++		const bool removed = delete_crypto_blk_dev((char*)("userdata")) == 0;
++#endif
++		if (!removed) {
+ 			LOGERR("Error deleting crypto block device, continuing anyway.\n");
+ 		}
+ 	}
+@@ -2741,6 +2806,7 @@ bool TWPartition::Backup_Tar(PartitionSettings *part_settings, pid_t *tar_fork_p
+ 			}
+ 		}
+ 	}
++	tar.require_fscrypt_policy = Is_FBE;
+ 	tar.part_settings = part_settings;
+ 	tar.backup_exclusions = &backup_exclusions;
+ 	tar.setdir(Backup_Path);
+@@ -2949,7 +3015,16 @@ unsigned long long TWPartition::Get_Restore_Size(PartitionSettings *part_setting
+ 	return Restore_Size;
+ }
+ 
++extern bool XperiaDataKeysAvailable();
++
+ bool TWPartition::Restore_Tar(PartitionSettings *part_settings) {
++    // Validate the adopted FBE mount before the native restore wipes files.
++    // An old Is_Decrypted flag does not prove that its filesystem keys remain.
++    if (Sony_FBE_Adopted &&
++        (!Is_Decrypted || !Is_Mounted() || !XperiaDataKeysAvailable())) {
++        gui_err("restore_unlock_data=Unlock Data before restoring this backup.");
++        return false;
++    }
+ 	string Full_FileName;
+ 	bool ret = false;
+ 	string Restore_File_System = Get_Restore_File_System(part_settings);
+@@ -3050,6 +3125,7 @@ bool TWPartition::Restore_Image(PartitionSettings *part_settings) {
+ bool TWPartition::Update_Size(bool Display_Error) {
+ 	bool ret = false, Was_Already_Mounted = false, ro = false;
+ 
++	Backup_Size_Valid = false;
+ 	Find_Actual_Block_Device();
+ 
+ 	if (Actual_Block_Device.empty())
+@@ -3062,6 +3138,7 @@ bool TWPartition::Update_Size(bool Display_Error) {
+ 		if (TWFunc::Path_Exists(Actual_Block_Device) && Find_Partition_Size()) {
+ 			Used = Size;
+ 			Backup_Size = Size;
++			Backup_Size_Valid = true;
+ 			goto success;
+ 		}
+ 		goto fail;
+@@ -3086,7 +3163,14 @@ bool TWPartition::Update_Size(bool Display_Error) {
+ 
+ 	if (Has_Data_Media) {
+ 		if (Mount(Display_Error)) {
+-			Used = backup_exclusions.Get_Folder_Size(Mount_Point);
++			bool size_complete = true;
++			Used = backup_exclusions.Get_Folder_Size(Mount_Point, &size_complete);
++			if (!size_complete) {
++				Backup_Size = 0;
++				LOGERR("Data backup size scan incomplete; refusing partial size\n");
++				if (!Was_Already_Mounted) UnMount(false);
++				goto fail;
++			}
+ 			Backup_Size = Used;
+ 			int bak = (int)(Used / 1048576LLU);
+ 			int fre = (int)(Free / 1048576LLU);
+@@ -3105,11 +3189,12 @@ bool TWPartition::Update_Size(bool Display_Error) {
+ 			goto fail;
+ 		}
+ 	}
++	Backup_Size_Valid = true;
+ 	if (!Was_Already_Mounted)
+ 		UnMount(false);
+ success:
+ 	Mount_Read_Only = ro;
+-	return true;
++	return Backup_Size_Valid;
+ fail:
+ 	Mount_Read_Only = ro;
+ 	return false;
+diff --git a/partitionmanager.cpp b/partitionmanager.cpp
+index 171fecc..cfe4466 100755
+--- a/partitionmanager.cpp
++++ b/partitionmanager.cpp
+@@ -16,11 +16,14 @@
+ 	along with TWRP.  If not, see <http://www.gnu.org/licenses/>.
+ */
+ 
++#include <chrono>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <sys/stat.h>
++#include <sys/statvfs.h>
+ #include <sys/vfs.h>
++#include <memory>
+ #include <unistd.h>
+ #include <map>
+ #include <vector>
+@@ -226,6 +229,8 @@ static inline std::string KM_Ver_From_Manifest(std::string ver) {
+ }
+ 
+ void inline Process_Keymaster_Version(TWPartition *ven, bool Display_Error) {
++	// Preserve mounts owned by the caller or running vendor services.
++	const bool vendor_was_mounted = ven && ven->Is_Mounted();
+ 	// Fetch the Keymaster Service version to be started
+ 	std::string version;
+ #ifndef TW_FORCE_KEYMASTER_VER
+@@ -236,7 +241,7 @@ void inline Process_Keymaster_Version(TWPartition *ven, bool Display_Error) {
+ 		*/
+ 	if (version.empty()) {
+ 		// unmount partition(s)
+-		if (ven) ven->UnMount(Display_Error);
++		if (ven && !vendor_was_mounted) ven->UnMount(Display_Error);
+ 
+ 		// Use keymaster_ver prop set from device tree (if exists)
+ 		version = android::base::GetProperty(TW_KEYMASTER_VERSION_PROP, version);
+@@ -247,10 +252,10 @@ void inline Process_Keymaster_Version(TWPartition *ven, bool Display_Error) {
+ 			LOGINFO("Keymaster_Ver::Unable to find vendor manifest on the device. Setting to default value.\n");
+ 		}
+ 	} else {
+-		if (ven) ven->UnMount(Display_Error);
++		if (ven && !vendor_was_mounted) ven->UnMount(Display_Error);
+ 	}
+ #else
+-	if (ven) ven->UnMount(Display_Error);
++	if (ven && !vendor_was_mounted) ven->UnMount(Display_Error);
+ 
+ 	version = android::base::GetProperty(TW_KEYMASTER_VERSION_PROP, version);
+ 	if (version.empty()) {
+@@ -334,13 +339,16 @@ int TWPartitionManager::Process_Fstab(string Fstab_Filename, bool Display_Error,
+ parse:
+ #endif
+ 	fstabFile = fopen(Fstab_Filename.c_str(), "rt");
+-	if (!parse_userdata && fstabFile == NULL) {
++	if (fstabFile) {
++		LOGINFO("Reading %s\n", Fstab_Filename.c_str());
++	} else if (!parse_userdata) {
+ 		LOGERR("Critical Error: Unable to open fstab at '%s'.\n", Fstab_Filename.c_str());
+ 		return false;
+-	} else
+-		LOGINFO("Reading %s\n", Fstab_Filename.c_str());
++	} else {
++		LOGINFO("Skipping unavailable additional fstab at '%s'.\n", Fstab_Filename.c_str());
++	}
+ 
+-	while (fgets(fstab_line, sizeof(fstab_line), fstabFile) != NULL) {
++	while (fstabFile && fgets(fstab_line, sizeof(fstab_line), fstabFile) != NULL) {
+ 		if (strstr(fstab_line, "swap"))
+ 			continue; // Skip swap in recovery
+ 
+@@ -385,7 +393,8 @@ clear:
+ 
+ 		memset(fstab_line, 0, sizeof(fstab_line));
+ 	}
+-	fclose(fstabFile);
++	if (fstabFile)
++		fclose(fstabFile);
+ 
+ 	if (!parse_userdata && twrp_flags.size() > 0) {
+ 		LOGINFO("Processing remaining twrp.flags\n");
+@@ -419,14 +428,13 @@ clear:
+ 
+ #ifndef TW_SKIP_ADDITIONAL_FSTAB
+ 		// Now Fetch the additional fstab
+-		if (TWFunc::Find_Fstab(Fstab_Filename)) {
++		if (!TWFunc::Find_Fstab(Fstab_Filename)) {
++			LOGINFO("Unable to parse vendor fstab\n");
++		} else if (TWFunc::copy_file(Fstab_Filename, additional_fstab, 0600, false) == 0) {
+ 			LOGINFO("Fstab: %s\n", Fstab_Filename.c_str());
+-			TWFunc::copy_file(Fstab_Filename, additional_fstab, 0600, false);
+ 			Fstab_Filename = additional_fstab;
+ 			property_set("fstab.additional", "1");
+ 			goto parse;
+-		} else {
+-			LOGINFO("Unable to parse vendor fstab\n");
+ 		}
+ 	}
+ 	LOGINFO("Done processing fstab files\n");
+@@ -438,23 +446,32 @@ clear:
+ 
+ 	if (odm) odm->UnMount(Display_Error);
+ 	Process_Keymaster_Version(ven, false);
++#ifndef USE_VENDOR_LIBS
+ 	if (ven) ven->UnMount(Display_Error);
++#endif
+ 	return true;
+ }
+ 
++void TWPartitionManager::Setup_MTP_Storage_IDs() {
++	// Native fstab ID scheme, also used before a new MTP session so storage
++	// discovered after initial fstab processing participates in that session.
++	unsigned int storageid = 1 << 16;
++	for (auto* part : Partitions) {
++        // Keep the slot reserved while adopted Data is locked, so toggling
++        // MTP cannot renumber a removable card that is already registered.
++		if (part->Is_Storage || part->Sony_FBE_Adopted)
++			part->MTP_Storage_ID = ++storageid;
++	}
++}
++
+ void TWPartitionManager::Setup_Fstab_Partitions(bool Display_Error) {
+ 		TWPartition* settings_partition = NULL;
+ 		TWPartition* andsec_partition = NULL;
+ 		std::vector<TWPartition*>::iterator iter;
+-		unsigned int storageid = 1 << 16;	// upper 16 bits are for physical storage device, we pretend to have only one
+ 
+ 		for (iter = Partitions.begin(); iter != Partitions.end(); iter++) {
+ 			(*iter)->Partition_Post_Processing(Display_Error);
+ 
+-			if ((*iter)->Is_Storage) {
+-				++storageid;
+-				(*iter)->MTP_Storage_ID = storageid;
+-			}
+ 
+ 			if (!settings_partition && (*iter)->Is_Settings_Storage && (*iter)->Is_Present)
+ 				settings_partition = (*iter);
+@@ -507,11 +524,9 @@ void TWPartitionManager::Setup_Fstab_Partitions(bool Display_Error) {
+ 				datamedia = true;
+ 				Dat->Setup_Data_Media();
+ 				settings_partition = Dat;
+-				// Since /data was not considered a storage partition earlier, we still need to assign an MTP ID
+-				++storageid;
+-				Dat->MTP_Storage_ID = storageid;
+ 			}
+ 		}
++		Setup_MTP_Storage_IDs();
+ 		if (!settings_partition) {
+ 			for (iter = Partitions.begin(); iter != Partitions.end(); iter++) {
+ 				if ((*iter)->Is_Storage) {
+@@ -546,6 +561,13 @@ void TWPartitionManager::Setup_Fstab_Partitions(bool Display_Error) {
+ 		Update_System_Details();
+ 		if (Get_Super_Status())
+ 			Setup_Super_Partition();
++		if (access("/xperia_load_probe", F_OK) == 0) {
++			Output_Partition_Logging();
++			std::vector<PartitionList> backup_entries;
++			Get_Partition_List("backup", &backup_entries);
++			for (const auto& entry : backup_entries)
++				LOGINFO("Native Backup entry: %s -> %s\n", entry.Mount_Point.c_str(), entry.Display_Name.c_str());
++		}
+ 		UnMount_Main_Partitions();
+ 	#ifdef AB_OTA_UPDATER
+ 		DataManager::SetValue("tw_active_slot", Get_Active_Slot_Display());
+@@ -595,7 +617,10 @@ void TWPartitionManager::Decrypt_Data() {
+ 			Set_Crypto_Type("file");
+ #ifdef TW_INCLUDE_FBE_METADATA_DECRYPT
+ #ifdef USE_FSCRYPT
+-			if (android::vold::fscrypt_mount_metadata_encrypted(Decrypt_Data->Actual_Block_Device, Decrypt_Data->Mount_Point, false, false, Decrypt_Data->Current_File_System, TWFunc::Path_Exists(additional_fstab) ? additional_fstab : "")) {
++			const std::string fstab_path = TWFunc::Path_Exists(additional_fstab) ? additional_fstab : "";
++			if (android::vold::fscrypt_mount_metadata_encrypted(
++					Decrypt_Data->Actual_Block_Device, Decrypt_Data->Mount_Point, false, false,
++					Decrypt_Data->Current_File_System, "" /* zoned_device */, fstab_path)) {
+ 				std::string crypto_blkdev = android::base::GetProperty("ro.crypto.fs_crypto_blkdev", "error");
+ 				Decrypt_Data->Decrypted_Block_Device = crypto_blkdev;
+ 				LOGINFO("Successfully decrypted metadata encrypted data partition with new block device: '%s'\n", crypto_blkdev.c_str());
+@@ -629,6 +654,9 @@ void TWPartitionManager::Decrypt_Data() {
+ 				}
+ 			}
+ 		} else {
++#ifdef TW_EXCLUDE_FDE
++			LOGINFO("FBE setup did not complete.\n");
++#else
+ 			LOGINFO("FBE setup failed. Trying FDE...\n");
+ 			Set_Crypto_State();
+ 			Set_Crypto_Type("block");
+@@ -645,6 +673,7 @@ void TWPartitionManager::Decrypt_Data() {
+ 				DataManager::SetValue("TW_CRYPTO_TYPE", password_type);
+ 				DataManager::SetValue("tw_crypto_pwtype_0", password_type);
+ 			}
++#endif
+ 		}
+ 	}
+ 	if (Decrypt_Data && (!Decrypt_Data->Is_Encrypted || Decrypt_Data->Is_Decrypted)) {
+@@ -1093,6 +1122,13 @@ int TWPartitionManager::Run_Backup(bool adbbackup) {
+ 
+ 	if (!Mount_Current_Storage(true))
+ 		return false;
++	if (!adbbackup) {
++		const auto destination = Find_Partition_By_Path(DataManager::GetCurrentStoragePath());
++		if (destination && destination->Is_Read_Only()) {
++			gui_err("backup_storage_ro=Selected storage is read-only. Choose writable storage.");
++			return false;
++		}
++	}
+ 
+ 	DataManager::GetValue(TW_SKIP_DIGEST_GENERATE_VAR, skip_digest);
+ 	if (skip_digest == 0)
+@@ -1124,6 +1160,10 @@ int TWPartitionManager::Run_Backup(bool adbbackup) {
+ 			LOGINFO("backup_path: %s\n", backup_path.c_str());
+ 			part_settings.Part = Find_Partition_By_Path(backup_path);
+ 			if (part_settings.Part != NULL) {
++				if (!part_settings.Part->Backup_Size_Valid) {
++					gui_msg(Msg(msg::kError, "backup_size_unavailable=Cannot back up '{1}': size scan failed.")(backup_path));
++					return false;
++				}
+ 				partition_count++;
+ 				if (part_settings.Part->Backup_Method == BM_FILES)
+ 					part_settings.file_bytes += part_settings.Part->Backup_Size;
+@@ -1134,6 +1174,10 @@ int TWPartitionManager::Run_Backup(bool adbbackup) {
+ 
+ 					for (subpart = Partitions.begin(); subpart != Partitions.end(); subpart++) {
+ 						if ((*subpart)->Can_Be_Backed_Up && (*subpart)->Is_Present && (*subpart)->Is_SubPartition && (*subpart)->SubPartition_Of == part_settings.Part->Mount_Point) {
++							if (!(*subpart)->Backup_Size_Valid) {
++								gui_msg(Msg(msg::kError, "backup_size_unavailable=Cannot back up '{1}': size scan failed.")((*subpart)->Mount_Point));
++								return false;
++							}
+ 							partition_count++;
+ 							if ((*subpart)->Backup_Method == BM_FILES)
+ 								part_settings.file_bytes += (*subpart)->Backup_Size;
+@@ -2168,6 +2212,10 @@ int TWPartitionManager::Decrypt_Device(string Password, int user_id) {
+ 		return -1;
+ 	}
+ 
++#ifdef TW_EXCLUDE_FDE
++	LOGERR("Unable to decrypt: FBE has not been initialized.\n");
++	return -1;
++#else
+ 	char isdecrypteddata[PROPERTY_VALUE_MAX];
+ 	property_get("twrp.decrypt.done", isdecrypteddata, "");
+ 	if (strcmp(isdecrypteddata, "true") == 0) {
+@@ -2215,6 +2263,7 @@ int TWPartitionManager::Decrypt_Device(string Password, int user_id) {
+ 		Post_Decrypt(crypto_blkdev);
+ 	}
+ 	return 0;
++#endif
+ #else
+ 	gui_err("no_crypto_support=No crypto support was compiled into this build.");
+ 	return -1;
+@@ -2387,7 +2436,9 @@ void TWPartitionManager::UnMount_Main_Partitions(void) {
+ 
+ 	TWPartition *Partition = Find_Partition_By_Path ("/vendor");
+ 
++#ifndef USE_VENDOR_LIBS
+ 	if (Partition != NULL) UnMount_By_Path("/vendor", false);
++#endif
+ 	UnMount_By_Path (Get_Android_Root_Path(), true);
+ 	Partition = Find_Partition_By_Path ("/product");
+ 	if (Partition != NULL) UnMount_By_Path("/product", false);
+@@ -2597,18 +2648,25 @@ void TWPartitionManager::Get_Partition_List(string ListType, std::vector<Partiti
+ 			if ((*iter)->Can_Be_Backed_Up && !(*iter)->Is_SubPartition && (*iter)->Is_Present) {
+ 				struct PartitionList part;
+ 				Backup_Size = (*iter)->Backup_Size;
++				bool size_valid = (*iter)->Backup_Size_Valid;
+ 				if ((*iter)->Has_SubPartition) {
+ 					std::vector<TWPartition*>::iterator subpart;
+ 
+ 					for (subpart = Partitions.begin(); subpart != Partitions.end(); subpart++) {
+-						if ((*subpart)->Is_SubPartition && (*subpart)->Can_Be_Backed_Up && (*subpart)->Is_Present && (*subpart)->SubPartition_Of == (*iter)->Mount_Point)
++						if ((*subpart)->Is_SubPartition && (*subpart)->Can_Be_Backed_Up && (*subpart)->Is_Present && (*subpart)->SubPartition_Of == (*iter)->Mount_Point) {
+ 							Backup_Size += (*subpart)->Backup_Size;
++							size_valid = size_valid && (*subpart)->Backup_Size_Valid;
++						}
+ 					}
+ 				}
+ 				sprintf(backup_size, "%llu", Backup_Size / 1024 / 1024);
+ 				part.Display_Name = (*iter)->Backup_Display_Name + " (";
+-				part.Display_Name += backup_size;
+-				part.Display_Name += "MB)";
++				if (size_valid) {
++					part.Display_Name += backup_size;
++					part.Display_Name += "MB)";
++				} else {
++					part.Display_Name += gui_lookup("backup_size_unknown", "size unavailable") + ")";
++				}
+ 				part.Mount_Point = (*iter)->Backup_Path;
+ 				part.selected = 0;
+ 				Partition_List->push_back(part);
+@@ -2758,6 +2816,18 @@ TWPartition *TWPartitionManager::Get_Default_Storage_Partition()
+ 	return res;
+ }
+ 
++// Match AOSP recovery: do not start a new USB configuration until init
++// acknowledges the preceding transition. Bound the wait so the UI can report errors.
++static bool SetRecoveryUsbConfig(const char* config) {
++	if (!android::base::SetProperty("sys.usb.config", config) ||
++	    !android::base::WaitForProperty("sys.usb.state", config, std::chrono::seconds(5))) {
++		LOGERR("USB configuration transition failed: requested=%s observed=%s\n",
++		       config, android::base::GetProperty("sys.usb.state", "").c_str());
++		return false;
++	}
++	return true;
++}
++
+ bool TWPartitionManager::Enable_MTP(void) {
+ #ifdef TW_HAS_MTP
+ 	if (mtppid) {
+@@ -2765,6 +2835,8 @@ bool TWPartitionManager::Enable_MTP(void) {
+ 		return true;
+ 	}
+ 
++	Setup_MTP_Storage_IDs();
++
+ 	int mtppipe[2];
+ 
+ 	if (pipe(mtppipe) < 0) {
+@@ -2777,7 +2849,11 @@ bool TWPartitionManager::Enable_MTP(void) {
+ 	if (strcmp(old_value, "mtp,adb") != 0) {
+ 		char vendor[PROPERTY_VALUE_MAX];
+ 		char product[PROPERTY_VALUE_MAX];
+-		property_set("sys.usb.config", "none");
++		if (!SetRecoveryUsbConfig("none")) {
++			close(mtppipe[0]);
++			close(mtppipe[1]);
++			return false;
++		}
+ 		property_get("usb.vendor", vendor, "18D1");
+ 		property_get("usb.product.mtpadb", product, "4EE2");
+ 		string vendorstr = vendor;
+@@ -2833,28 +2909,37 @@ bool TWPartitionManager::Disable_MTP(void) {
+ 	if (strcmp(old_value, "adb") != 0) {
+ 		char vendor[PROPERTY_VALUE_MAX];
+ 		char product[PROPERTY_VALUE_MAX];
+-		property_set("sys.usb.config", "none");
++		if (!SetRecoveryUsbConfig("none"))
++			return false;
+ 		property_get("usb.vendor", vendor, "18D1");
+ 		property_get("usb.product.adb", product, "D001");
+ 		string vendorstr = vendor;
+ 		string productstr = product;
+ 		TWFunc::write_to_file("/sys/class/android_usb/android0/idVendor", vendorstr);
+ 		TWFunc::write_to_file("/sys/class/android_usb/android0/idProduct", productstr);
+-		usleep(2000);
+ 	}
+ #ifdef TW_HAS_MTP
+ 	if (mtppid) {
+ 		LOGINFO("Disabling MTP\n");
++		const pid_t child = mtppid;
++		if (kill(child, SIGKILL) < 0 && errno != ESRCH) {
++			LOGERR("Unable to stop MTP child: %s\n", strerror(errno));
++			return false;
++		}
+ 		int status;
+-		kill(mtppid, SIGKILL);
++		pid_t waited;
++		do {
++			waited = waitpid(child, &status, 0);
++		} while (waited < 0 && errno == EINTR);
++		if (waited < 0 && errno != ECHILD)
++			LOGERR("Unable to reap MTP child: %s\n", strerror(errno));
+ 		mtppid = 0;
+-		// We don't care about the exit value, but this prevents a zombie process
+-		waitpid(mtppid, &status, 0);
+ 		close(mtp_write_fd);
+ 		mtp_write_fd = -1;
+ 	}
+ #endif
+-	property_set("sys.usb.config", "adb");
++	if (!SetRecoveryUsbConfig("adb"))
++		return false;
+ #ifdef TW_HAS_MTP
+ 	DataManager::SetValue("tw_mtp_enabled", 0);
+ 	return true;
+@@ -2885,8 +2970,10 @@ bool TWPartitionManager::Add_Remove_MTP_Storage(TWPartition* Part, int message_t
+ 	}
+ 
+ 	if (Part) {
+-		if (Part->MTP_Storage_ID == 0)
++		if (Part->MTP_Storage_ID == 0) {
++			LOGERR("MTP storage registration missing native storage ID\n");
+ 			return false;
++		}
+ 		if (message_type == MTP_MESSAGE_REMOVE_STORAGE) {
+ 			mtp_message.message_type = MTP_MESSAGE_REMOVE_STORAGE; // Remove
+ 			LOGINFO("sending message to remove %i\n", Part->MTP_Storage_ID);
+@@ -2898,7 +2985,7 @@ bool TWPartitionManager::Add_Remove_MTP_Storage(TWPartition* Part, int message_t
+ 				LOGINFO("Message sent, remove storage ID: %i\n", Part->MTP_Storage_ID);
+ 				return true;
+ 			}
+-		} else if (message_type == MTP_MESSAGE_ADD_STORAGE && Part->Is_Mounted()) {
++		} else if (message_type == MTP_MESSAGE_ADD_STORAGE && Part->Is_Storage && Part->Is_Mounted()) {
+ 			mtp_message.message_type = MTP_MESSAGE_ADD_STORAGE; // Add
+ 			mtp_message.storage_id = Part->MTP_Storage_ID;
+ 			if (Part->Storage_Path.size() >= sizeof(mtp_message.path)) {
+@@ -3399,13 +3486,16 @@ void TWPartitionManager::setup_uevent() {
+ 	uevent_pfd.events = POLLIN;
+ 	uevent_pfd.fd = socket(PF_NETLINK, SOCK_DGRAM, NETLINK_KOBJECT_UEVENT);
+ 	if (uevent_pfd.fd==-1) {
+-		LOGERR("uevent not root\n");
++		LOGERR("Unable to open uevent socket: %s\n", strerror(errno));
+ 		return;
+ 	}
+ 
+ 	// Listen to netlink socket
+ 	if (::bind(uevent_pfd.fd, (struct sockaddr *) &nls, sizeof(struct sockaddr_nl)) < 0) {
+-		LOGERR("Bind failed\n");
++		const int error = errno;
++		close(uevent_pfd.fd);
++		uevent_pfd.fd = -1;
++		LOGERR("Unable to bind uevent socket: %s\n", strerror(error));
+ 		return;
+ 	}
+ 	set_select_fd();
+@@ -3472,6 +3562,124 @@ void TWPartitionManager::close_uevent() {
+ 	uevent_pfd.fd = -1;
+ }
+ 
++bool TWPartitionManager::Adopt_Decrypted_Data(const string& Block_Device) {
++    // The caller must have verified the user's CE key and retained the FBE policies.
++    // Adopt vold's verified mount without unmounting installed FBE keys.
++    TWPartition* previous = Find_Partition_By_Path("/data");
++    if ((previous && (!previous->Sony_FBE_Adopted || previous->Is_Decrypted)) ||
++        Block_Device.find("/dev/block/") != 0)
++        return false;
++    struct stat block {}, data {};
++    struct statvfs info {};
++    constexpr unsigned long required = ST_NOSUID | ST_NODEV;
++    if (stat(Block_Device.c_str(), &block) != 0 || !S_ISBLK(block.st_mode) ||
++        stat("/data", &data) != 0 || !S_ISDIR(data.st_mode) || data.st_dev != block.st_rdev ||
++        statvfs("/data", &info) != 0 || !info.f_blocks || (info.f_flag & required) != required || (info.f_flag & ST_RDONLY))
++        return false;
++    auto volume = std::make_unique<TWPartition>();
++    const string fstab = "/data f2fs " + Block_Device +
++        " flags=backup=1;ignoreblkid;fsflags=rw,nosuid,nodev,inlinecrypt";
++    if (!volume->Process_Fstab_Line(fstab.c_str(), false, nullptr) || !volume->Is_Mounted())
++        return false;
++    volume->Primary_Block_Device = "/dev/block/by-name/userdata";
++    volume->Decrypted_Block_Device = Block_Device;
++    volume->Key_Directory = "/metadata/vold/metadata_encryption";
++    volume->Is_FBE = true;
++    volume->Is_Encrypted = true;
++    volume->Is_Decrypted = true;
++    volume->Change_Mount_Read_Only(false);
++    const string old_internal_path = DataManager::GetStrValue(TW_INTERNAL_PATH);
++    const string old_has_internal = DataManager::GetStrValue("tw_has_internal");
++    const string old_has_data_media = DataManager::GetStrValue("tw_has_data_media");
++    const auto restore_storage_state = [&]() {
++        DataManager::SetValue(TW_INTERNAL_PATH, old_internal_path);
++        DataManager::SetValue("tw_has_internal", old_has_internal);
++        DataManager::SetValue("tw_has_data_media", old_has_data_media);
++    };
++    volume->Setup_Data_Media(true);
++    volume->Setup_FBE_Exclusions();
++    if (!volume->Is_Mounted() || !volume->Update_Size(false)) {
++        restore_storage_state();
++        return false;
++    }
++    // vold already mounted Data, so Mount() returns before its native bind step.
++    // Complete that step after Setup_Data_Media selected the user's media path.
++    if (!volume->Bind_Mount(false)) {
++        restore_storage_state();
++        LOGERR("Unable to bind decrypted internal storage\n");
++        return false;
++    }
++    struct stat media_source {}, media_target {};
++    const bool media_bound =
++        stat(volume->Symlink_Path.c_str(), &media_source) == 0 &&
++        stat(volume->Symlink_Mount_Point.c_str(), &media_target) == 0 &&
++        S_ISDIR(media_source.st_mode) && S_ISDIR(media_target.st_mode) &&
++        media_source.st_dev == media_target.st_dev &&
++        media_source.st_ino == media_target.st_ino;
++    if (!media_bound) {
++        umount(volume->Symlink_Mount_Point.c_str());
++        restore_storage_state();
++        LOGERR("Internal storage bind verification failed\n");
++        return false;
++    }
++    LOGINFO("Native Data: media bind source and destination verified\n");
++    // Commit only after mount, size and media binding have all succeeded.
++    // Keep the locked placeholder on every failure so the native Mount page
++    // can offer another credential attempt without exposing ciphertext.
++    volume->Sony_FBE_Adopted = true;
++    if (previous) {
++        volume->MTP_Storage_ID = previous->MTP_Storage_ID;
++        auto slot = std::find(Partitions.begin(), Partitions.end(), previous);
++        if (slot == Partitions.end()) {
++            umount(volume->Symlink_Mount_Point.c_str());
++            restore_storage_state();
++            return false;
++        }
++        *slot = volume.release();
++        delete previous;
++    } else {
++        Add_Partition(volume.release());
++    }
++    Setup_MTP_Storage_IDs();
++    Output_Partition(Find_Partition_By_Path("/data"));
++    // Late FBE handoff must establish the same emulated-storage state as
++    // Setup_Fstab_Partitions, before native translated names are refreshed.
++    datamedia = true;
++    DataManager::SetValue(TW_IS_DECRYPTED, 1);
++    DataManager::SetValue(TW_IS_FBE, 1);
++    DataManager::SetValue(TW_IS_ENCRYPTED, 0);
++    // Match Post_Decrypt: ReadSettingsFile uses this native persistent path.
++    DataManager::SetValue("tw_settings_path", TW_STORAGE_PATH);
++    Add_MTP_Storage("/data");
++    LOGINFO("Native Data: adopted vold FBE mount with native backup exclusions\n");
++    return true;
++}
++
++bool TWPartitionManager::Add_Probed_Storage(const string& Fstab_Line, bool Writable) {
++	auto volume = std::make_unique<TWPartition>();
++	if (!volume->Process_Fstab_Line(Fstab_Line.c_str(), false, nullptr) ||
++	    !volume->Is_Present || !volume->Is_Storage)
++		return false;
++
++	volume->Change_Mount_Read_Only(true);
++	const bool mounted = volume->Mount(false);
++	struct statvfs info {};
++	constexpr unsigned long required = ST_RDONLY | ST_NOSUID | ST_NODEV | ST_NOEXEC;
++	const bool verified = mounted && statvfs(volume->Mount_Point.c_str(), &info) == 0 &&
++	                      (info.f_flag & required) == required && info.f_blocks != 0 &&
++	                      volume->Update_Size(false);
++	if (mounted && !volume->UnMount(false)) {
++		umount2(volume->Mount_Point.c_str(), MNT_DETACH);
++		return false;
++	}
++	if (!verified)
++		return false;
++
++	volume->Change_Mount_Read_Only(!Writable);
++	Add_Partition(volume.release());
++	return true;
++}
++
+ void TWPartitionManager::Add_Partition(TWPartition* Part) {
+ 	Partitions.push_back(Part);
+ }
+@@ -3644,6 +3852,9 @@ void TWPartitionManager::Setup_Super_Partition() {
+ 	superPartition->Is_Present = true;
+ 	superPartition->Is_SubPartition = false;
+ 	superPartition->Setup_Image();
++	// Super is created after Update_System_Details(); initialize its backup size now.
++	if (!superPartition->Update_Size(true))
++		LOGERR("Unable to determine Super partition size\n");
+ 	Add_Partition(superPartition);
+ 	PartitionManager.Output_Partition(superPartition);
+ }
+diff --git a/partitions.hpp b/partitions.hpp
+index 8c686ed..a29faa5 100755
+--- a/partitions.hpp
++++ b/partitions.hpp
+@@ -179,7 +179,8 @@ public:
+ 
+ protected:
+ 	bool Has_Data_Media;                                                      // Indicates presence of /data/media, may affect wiping and backup methods
+-	void Setup_Data_Media();                                                  // Sets up a partition as a /data/media emulated storage partition
++	void Setup_Data_Media(bool Preserve_Mount = false);
++	void Setup_FBE_Exclusions();                                                  // Sets up a partition as a /data/media emulated storage partition
+ 	void Set_Block_Device(std::string block_device);                          // Allow super partition setup to change block device
+ 
+ private:
+@@ -256,10 +257,12 @@ private:
+ 	unsigned long long Size;                                                  // Overall size of the partition
+ 	unsigned long long Used;                                                  // Overall used space
+ 	unsigned long long Free;                                                  // Overall free space
++	bool Backup_Size_Valid;                                                   // Last size query completed successfully
+ 	unsigned long long Backup_Size;                                           // Backup size -- may be different than used space especially when /data/media is present
+ 	unsigned long long Restore_Size;                                          // Restore size of the current restore operation
+ 	bool Can_Be_Encrypted;                                                    // This partition might be encrypted, affects error handling, can only be true if crypto support is compiled in
+ 	bool Is_Encrypted;                                                        // This partition is thought to be encrypted -- it wouldn't mount for some reason, only avialble with crypto support
++	bool Sony_FBE_Adopted; // Owned vold mount: full unmount requires local re-authentication.
+ 	bool Is_Decrypted;                                                        // This partition has successfully been decrypted
+ 	bool Is_FBE;                                                              // File Based Encryption is present
+ 	bool Mount_To_Decrypt;                                                    // Mount this partition during decrypt (/vendor, /firmware, etc in case we need proprietary libs or firmware files)
+@@ -396,6 +399,8 @@ public:
+ 	Uevent_Block_Data get_event_block_values(char *buf, int len);             // Scans the buffer from uevent data and loads the appropriate data into a Uevent_Block_Data struct for processing
+ 	void read_uevent();                                                       // Reads uevent data into a buffer
+ 	void close_uevent();                                                      // Closes the uevent netlink socket
++	bool Add_Probed_Storage(const string& Fstab_Line, bool Writable = true);
++	bool Adopt_Decrypted_Data(const string& Block_Device);
+ 	void Add_Partition(TWPartition* Part);                                    // Adds a new partition to the Partitions vector
+ 	std::string Get_Bare_Partition_Name(std::string Mount_Point);
+     bool Prepare_Super_Volume(TWPartition* twrpPart);					  	  // Prepare logical super partition volume for mounting
+@@ -423,6 +428,7 @@ private:
+ 	void Coldboot_Scan(std::vector<string> *sysfs_entries, const string& Path, int depth); // Scans subfolders to find matches to the paths stored in sysfs_entries so we can trigger the uevent system to "re-add" devices
+ 	void Coldboot();                                                          // Starts the scan of the /sys/block folder
+ 	bool Prepare_Empty_Folder(const std::string& Folder);                     // Creates an empty folder at Folder. If the folder already exists, the folder is deleted, then created
++	void Setup_MTP_Storage_IDs(); // Initialize storage IDs before starting MTP
+ 	pid_t mtppid;
+ 	bool mtp_was_enabled;
+ 	int mtp_write_fd;
+diff --git a/prebuilt/Android.mk b/prebuilt/Android.mk
+index f3b7160..7aeda9c 100755
+--- a/prebuilt/Android.mk
++++ b/prebuilt/Android.mk
+@@ -405,6 +405,13 @@ endif
+ 
+ include $(CLEAR_VARS)
+ LOCAL_MODULE := relink_libraries
++# libtar must be recopied after archive implementation changes.
++LOCAL_ADDITIONAL_DEPENDENCIES += $(TARGET_OUT_SHARED_LIBRARIES)/libtar.so
++# Required modules only establish install order. Recopy MTP when its bytes change.
++ifeq ($(TW_EXCLUDE_MTP),)
++LOCAL_ADDITIONAL_DEPENDENCIES += $(TARGET_OUT_SHARED_LIBRARIES)/libtwrpmtp-ffs.so
++endif
++LOCAL_ADDITIONAL_DEPENDENCIES += $(RELINK)
+ LOCAL_MODULE_TAGS := optional
+ LOCAL_MODULE_CLASS := EXECUTABLES
+ LOCAL_MODULE_PATH := $(TARGET_RECOVERY_ROOT_OUT)/
+diff --git a/twrp-functions.cpp b/twrp-functions.cpp
+index cccb1e7..03548e3 100644
+--- a/twrp-functions.cpp
++++ b/twrp-functions.cpp
+@@ -1,3 +1,4 @@
++#include <sys/system_properties.h>
+ /*
+ 	Copyright 2012-2020 TeamWin
+ 	This file is part of TWRP/TeamWin Recovery Project.
+@@ -1195,19 +1196,19 @@ void TWFunc::Disable_Stock_Recovery_Replace(void) {
+ }
+ 
+ unsigned long long TWFunc::IOCTL_Get_Block_Size(const char* block_device) {
+-	unsigned long block_device_size;
++	uint64_t block_device_size = 0;
+ 	int ret = 0;
+ 
+ 	int fd = open(block_device, O_RDONLY);
+ 	if (fd < 0) {
+ 		LOGINFO("Find_Partition_Size: Failed to open '%s', (%s)\n", block_device, strerror(errno));
+ 	} else {
+-		ret = ioctl(fd, BLKGETSIZE, &block_device_size);
++		ret = ioctl(fd, BLKGETSIZE64, &block_device_size);
+ 		close(fd);
+ 		if (ret) {
+ 			LOGINFO("Find_Partition_Size: ioctl error: (%s)\n", strerror(errno));
+ 		} else {
+-			return (unsigned long long)(block_device_size) * 512LLU;
++			return block_device_size;
+ 		}
+ 	}
+ 	return 0;
+@@ -1388,6 +1389,10 @@ exit:
+ 
+ int TWFunc::Property_Override(string Prop_Name, string Prop_Value) {
+ #ifdef TW_INCLUDE_LIBRESETPROP
++    // Avoid writing existing identical values, including immutable properties.
++    const prop_info* existing = __system_property_find(Prop_Name.c_str());
++    if (existing && android::base::GetProperty(Prop_Name, "") == Prop_Value)
++        return 0;
+     return setprop(Prop_Name.c_str(), Prop_Value.c_str(), false);
+ #else
+     return NOT_AVAILABLE;
+diff --git a/twrp.cpp b/twrp.cpp
+index b257780..95200c2 100644
+--- a/twrp.cpp
++++ b/twrp.cpp
+@@ -22,10 +22,17 @@
+ #include <sys/stat.h>
+ #include <sys/types.h>
+ #include <time.h>
++#include "bounded-load-sample.hpp"
+ #include <unistd.h>
+ #include <signal.h>
+ #include <thread>
+ #include <chrono>
++#if defined(__aarch64__)
++#include <link.h>
++#include <stdint.h>
++#include <string.h>
++#include <ucontext.h>
++#endif
+ #include "recovery_utils/battery_utils.h"
+ #include "gui/twmsg.h"
+ 
+@@ -67,8 +74,42 @@ extern "C" {
+ #endif
+ 
+ #ifdef TW_INCLUDE_CRYPTO
++#include <android-base/file.h>
++#include <android-base/parseint.h>
++#include <android/binder_auto_utils.h>
++#include <aidl/android/hardware/security/keymint/IKeyMintDevice.h>
++#include <openssl/mem.h>
++#include <android/binder_manager.h>
++#include <cstring>
++#include <dirent.h>
++#include <memory>
++#include <spawn.h>
++#include <sys/socket.h>
++#include <sys/wait.h>
++#include <fstream>
++#include <fcntl.h>
++#include <inttypes.h>
++#include <linux/fscrypt.h>
++#include <linux/magic.h>
++#include <libdm/dm.h>
++#include <string_view>
++#include <sys/mount.h>
++#include <sys/ioctl.h>
++#include <sys/klog.h>
++#include <android/binder_process.h>
++#include "data-scan-avc-summary.hpp"
++#include <sys/statvfs.h>
++#include <sys/sysmacros.h>
++#include <sys/vfs.h>
++#include <selinux/selinux.h>
++#include <vector>
+ #include "FsCrypt.h"
++#include "MetadataCrypt.h"
++#include "KeyStorage.h"
++#include "KeystoreInfo.hpp"
+ #include "Decrypt.h"
++#include "libtar/libtar.h"
++#include "libblkid/include/blkid.h"
+ #endif
+ 
+ //extern int adb_server_main(int is_daemon, int server_port, int /* reply_fd */);
+@@ -81,7 +122,26 @@ static void Print_Prop(const char *key, const char *name, void *cookie) {
+ 	printf("%s=%s\n", key, name);
+ }
+ 
++#ifdef TW_INCLUDE_CRYPTO
++static int sony_ce_credential_type = 0;
++static void ReleaseSonyDecryptedData();
++#endif
++
+ static void Decrypt_Page(bool SkipDecryption, bool datamedia) {
++#ifdef TW_INCLUDE_CRYPTO
++	if (sony_ce_credential_type != 0) {
++		if (!SkipDecryption) {
++			DataManager::SetValue("tw_xperia_ce_test", 1);
++			DataManager::SetValue("tw_xperia_ce_storage_error", 0);
++			DataManager::SetValue("tw_crypto_user_id", "0");
++			DataManager::SetValue(TW_CRYPTO_PWTYPE, sony_ce_credential_type);
++			printf("Sony CE UI: waiting for local credential\n");
++			if (gui_startPage("decrypt", 1, 1) != 0)
++				LOGERR("Failed to start decryption page.\n");
++		}
++		return;
++	}
++#endif
+ 	// Offer to decrypt if the device is encrypted
+ 	if (DataManager::GetIntValue(TW_IS_ENCRYPTED) != 0) {
+ 		if (SkipDecryption) {
+@@ -144,8 +204,13 @@ static void process_recovery_mode(twrpAdbBuFifo* adb_bu_fifo, bool skip_decrypti
+ 	std::vector<std::string> build_date_props = {"ro.build.date.utc", "ro.bootimage.build.date.utc", "ro.vendor.build.date.utc", "ro.system.build.date.utc", "ro.system_ext.build.date.utc", "ro.product.build.date.utc", "ro.odm.build.date.utc"};
+ 	std::string val = "0";
+ 	for (auto prop : build_date_props) {
+-		TWFunc::Property_Override(prop, val);
+-		LOGINFO("Overriding %s with value: \"%s\"\n", prop.c_str(), val.c_str());
++		const int result = TWFunc::Property_Override(prop, val);
++		const std::string actual = android::base::GetProperty(prop, "");
++		if (result == 0 && actual == val)
++			LOGINFO("Overrode %s with value: %s\n", prop.c_str(), val.c_str());
++		else
++			LOGINFO("Property override failed: %s (result=%d, value_matches=%d)\n",
++				prop.c_str(), result, actual == val);
+ 	}
+ #if defined(TW_OVERRIDE_SYSTEM_PROPS)
+ 	stringstream override_props(EXPAND(TW_OVERRIDE_SYSTEM_PROPS));
+@@ -225,7 +290,8 @@ static void process_recovery_mode(twrpAdbBuFifo* adb_bu_fifo, bool skip_decrypti
+ 	LOGINFO("Backup of TWRP ramdisk done.\n");
+ #endif
+ #ifdef TW_INCLUDE_CRYPTO
+-	android::keystore::copySqliteDb();
++	if (access("/xperia_ce_local_ui", F_OK) != 0)
++		android::keystore::copySqliteDb();
+ #endif
+ 	Decrypt_Page(skip_decryption, datamedia);
+ 
+@@ -240,6 +306,8 @@ static void process_recovery_mode(twrpAdbBuFifo* adb_bu_fifo, bool skip_decrypti
+ 
+ 	DataManager::LoadTWRPFolderInfo();
+ 	DataManager::ReadSettingsFile();
++#ifdef TW_INCLUDE_CRYPTO
++#endif
+ 
+ 	// Run any outstanding OpenRecoveryScript
+ 	std::string cacheDir = TWFunc::get_log_dir();
+@@ -325,6 +393,9 @@ static void process_recovery_mode(twrpAdbBuFifo* adb_bu_fifo, bool skip_decrypti
+ static void reboot() {
+ 	gui_msg(Msg("rebooting=Rebooting..."));
+ 	TWFunc::Update_Log_File();
++#ifdef TW_INCLUDE_CRYPTO
++	ReleaseSonyDecryptedData();
++#endif
+ 	string Reboot_Arg;
+ 	DataManager::GetValue("tw_reboot_arg", Reboot_Arg);
+ 	if (Reboot_Arg == "recovery")
+@@ -343,6 +414,962 @@ static void reboot() {
+ 		TWFunc::tw_reboot(rb_system);
+ }
+ 
++#ifdef TW_INCLUDE_CRYPTO
++static void LogSonyFbeProbeDiagnostics() {
++	std::ifstream mounts("/proc/self/mounts");
++	for (std::string mount; std::getline(mounts, mount);) {
++		if (mount.find(" /vendor ") != std::string::npos ||
++		    mount.find(" /vendor/firmware_mnt ") != std::string::npos) {
++			printf("Sony FBE mount: %s\n", mount.c_str());
++		}
++	}
++
++	const char* const targets[] = {
++		"/system/bin/xperia_recovery_service_trace",
++		"/system/bin/linker64",
++		"/vendor/bin/qseecomd",
++		"/vendor/bin/hw/vendor.qti.hardware.qseecom@1.0-service",
++		"/vendor/bin/hw/android.hardware.security.keymint-service-qti",
++		"/vendor/bin/hw/android.hardware.gatekeeper-service-qti",
++	};
++	for (const char* target : targets) {
++		struct stat info {};
++		const int result = stat(target, &info);
++		const std::string status = result < 0 ? strerror(errno) : std::to_string(info.st_mode);
++		char* context = nullptr;
++		const int label_result = getfilecon(target, &context);
++		printf("Sony FBE executable: %s stat=%s label=%s\n", target, status.c_str(),
++		       label_result < 0 ? strerror(errno) : context);
++		freecon(context);
++	}
++
++	const int buffer_size = klogctl(10, nullptr, 0); // SYSLOG_ACTION_SIZE_BUFFER
++	const int max_log_size = 16 * 1024 * 1024;
++	const int log_size = buffer_size > 0 ? std::min(buffer_size, max_log_size) : 512 * 1024;
++	std::vector<char> log(log_size);
++	const int bytes = klogctl(3, log.data(), log.size()); // SYSLOG_ACTION_READ_ALL
++	if (bytes < 0) {
++		printf("Sony FBE kernel log unavailable: %s\n", strerror(errno));
++		return;
++	}
++	printf("Sony FBE kernel log bytes=%d buffer_size=%d\n", bytes, buffer_size);
++	std::string_view remaining(log.data(), bytes);
++	size_t init_lines = 0;
++	size_t probe_lines = 0;
++	while (!remaining.empty()) {
++		const size_t newline = remaining.find('\n');
++		const auto line = remaining.substr(0, newline);
++		const bool init_line = line.find("init: ") != std::string_view::npos;
++		const bool probe_line =
++			line.find("xperia_") != std::string_view::npos ||
++			line.find("xperia.fbe_probe") != std::string_view::npos ||
++			line.find("xperia-service.log") != std::string_view::npos ||
++			line.find("createProcessGroup") != std::string_view::npos ||
++			line.find("cannot setexeccon") != std::string_view::npos ||
++			line.find("/vendor/firmware_mnt") != std::string_view::npos ||
++			(line.find("avc: denied") != std::string_view::npos &&
++			 (line.find("vendor_hal_keymint") != std::string_view::npos ||
++			  line.find("vendor_hal_gatekeeper") != std::string_view::npos ||
++			  line.find("qsee") != std::string_view::npos ||
++			  line.find("scontext=u:r:init:s0") != std::string_view::npos));
++		if (probe_line && probe_lines++ < 80) {
++			printf("Sony FBE kernel: %.*s\n", static_cast<int>(line.size()), line.data());
++		} else if (init_line && init_lines++ < 4) {
++			printf("Sony FBE kernel init sample: %.*s\n", static_cast<int>(line.size()), line.data());
++		}
++		if (newline == std::string_view::npos)
++			break;
++		remaining.remove_prefix(newline + 1);
++	}
++	printf("Sony FBE kernel counts: init=%zu probe=%zu\n", init_lines, probe_lines);
++}
++
++static void ExportSonyStockKeystore() {
++	if (access("/xperia_stock_keystore_export", F_OK) != 0)
++		return;
++	std::string device;
++	const char* mount_point = "/mnt/xperia-stock-system";
++	if (!android::dm::DeviceMapper::Instance().GetDmDevicePathByName("system_a", &device)) {
++		printf("Sony stock Keystore2: system_a mapping is unavailable\n");
++		return;
++	}
++	if (mount(device.c_str(), mount_point, "ext4", MS_RDONLY | MS_NODEV | MS_NOSUID | MS_NOEXEC,
++	          "noload") < 0) {
++		printf("Sony stock Keystore2: read-only system mount failed: %s\n", strerror(errno));
++		return;
++	}
++
++	const char* const paths[] = {
++		"/mnt/xperia-stock-system/bin/keystore2",
++		"/mnt/xperia-stock-system/system/bin/keystore2",
++	};
++	const char* output = "/tmp/xperia-stock-keystore2";
++	bool exported = false;
++	for (const char* path : paths) {
++		struct stat input {};
++		if (lstat(path, &input) < 0 || !S_ISREG(input.st_mode) ||
++		    input.st_size <= 4 || input.st_size > 16 * 1024 * 1024)
++			continue;
++		char magic[4];
++		std::ifstream stream(path, std::ios::binary);
++		if (!stream.read(magic, sizeof(magic)) || std::memcmp(magic, "\x7f" "ELF", 4) != 0)
++			continue;
++		struct stat result {};
++		exported = TWFunc::copy_file(path, output, 0644, false) == 0 &&
++		           lstat(output, &result) == 0 && result.st_size == input.st_size;
++		break;
++	}
++	printf("Sony stock Keystore2: %s\n", exported ? "read-only export ready" : "stock ELF unavailable");
++	if (umount(mount_point) < 0)
++		printf("Sony stock Keystore2: system unmount failed: %s\n", strerror(errno));
++}
++
++static bool InstallSonyProbeKey(const std::string& key_dir, const char* target,
++                                const android::fscrypt::EncryptionOptions& options,
++                                android::fscrypt::EncryptionPolicy* policy) {
++	android::vold::KeyBuffer wrapped_key;
++	android::vold::KeyBuffer ephemeral_key;
++	return android::vold::retrieveKeyWithoutUpgrade(key_dir, android::vold::kEmptyAuthentication,
++	                                              &wrapped_key) &&
++	       android::vold::exportWrappedStorageKeyWithoutUpgrade(wrapped_key, &ephemeral_key) &&
++	       android::vold::installKey(target, options, ephemeral_key, policy);
++}
++
++static void ProbeSonyProtectorHardware(std::vector<uint8_t>& key_blob) {
++	if (key_blob.empty())
++		return;
++
++	namespace km = aidl::android::hardware::security::keymint;
++	constexpr char service[] = "android.hardware.security.keymint.IKeyMintDevice/default";
++	ndk::SpAIBinder binder(AServiceManager_checkService(service));
++	auto keymint = km::IKeyMintDevice::fromBinder(binder);
++	if (!keymint) {
++		OPENSSL_cleanse(key_blob.data(), key_blob.size());
++		printf("Sony CE KeyMint probe: unavailable\n");
++		return;
++	}
++	std::vector<km::KeyCharacteristics> characteristics;
++	const auto status = keymint->getKeyCharacteristics(key_blob, {}, {}, &characteristics);
++	OPENSSL_cleanse(key_blob.data(), key_blob.size());
++
++	bool tee = false;
++	bool secure_user = false;
++	bool auth_timeout = false;
++	bool no_auth = false;
++	if (status.isOk()) {
++		for (const auto& group : characteristics) {
++			tee |= group.securityLevel == km::SecurityLevel::TRUSTED_ENVIRONMENT;
++			for (const auto& authorization : group.authorizations) {
++				secure_user |= authorization.tag == km::Tag::USER_SECURE_ID;
++				auth_timeout |= authorization.tag == km::Tag::AUTH_TIMEOUT;
++				no_auth |= authorization.tag == km::Tag::NO_AUTH_REQUIRED;
++			}
++		}
++	}
++	printf("Sony CE KeyMint probe: ok=%d error=%d tee=%d secure_user=%d auth_timeout=%d no_auth=%d\n",
++	       status.isOk(), status.getServiceSpecificError(), tee, secure_user, auth_timeout, no_auth);
++}
++
++static constexpr char kSonyMicroSdHost[] =
++    "/sys/devices/platform/soc/8804000.sdhci/mmc_host/mmc1";
++
++struct SonyMicroSdNode {
++	std::string sysfs;
++	std::string device;
++	bool partition;
++};
++
++static bool ParseSonyMicroSdNode(const std::string& sysfs, const std::string& name,
++                                 SonyMicroSdNode* node, std::string* card) {
++	const std::string prefix = std::string(kSonyMicroSdHost) + "/mmc1:";
++	if (sysfs.compare(0, prefix.size(), prefix) != 0)
++		return false;
++
++	const auto block = sysfs.find("/block/mmcblk", prefix.size());
++	if (block == std::string::npos || block == prefix.size() ||
++	    sysfs.find('/', prefix.size()) != block ||
++	    sysfs.find_first_not_of("0123456789abcdef", prefix.size()) != block)
++		return false;
++	const auto disk_start = block + sizeof("/block/") - 1;
++	const auto child = sysfs.find('/', disk_start);
++	const auto disk = sysfs.substr(disk_start, child == std::string::npos
++	                                           ? std::string::npos : child - disk_start);
++	const size_t disk_number = sizeof("mmcblk") - 1;
++	if (disk.size() <= disk_number ||
++	    disk.find_first_not_of("0123456789", disk_number) != std::string::npos)
++		return false;
++
++	const bool partition = child != std::string::npos;
++	const auto leaf = partition ? sysfs.substr(child + 1) : disk;
++	if (name != leaf)
++		return false;
++	if (partition) {
++		const auto partition_prefix = disk + "p";
++		if (leaf.compare(0, partition_prefix.size(), partition_prefix) != 0 ||
++		    leaf.size() <= partition_prefix.size() || leaf[partition_prefix.size()] == '0' ||
++		    leaf.find_first_not_of("0123456789", partition_prefix.size()) != std::string::npos)
++			return false;
++	}
++	*card = sysfs.substr(0, block);
++	*node = {sysfs, "/dev/block/" + name, partition};
++	return true;
++}
++
++static std::string SonyPortableFileSystem(const SonyMicroSdNode& node) {
++	std::string id;
++	struct stat info {};
++	if (lstat(node.device.c_str(), &info) != 0 || !S_ISBLK(info.st_mode) ||
++	    !android::base::ReadFileToString(node.sysfs + "/dev", &id) ||
++	    android::base::Trim(id) != std::to_string(major(info.st_rdev)) + ":" +
++	                              std::to_string(minor(info.st_rdev))) {
++		printf("Sony microSD: device node could not be verified\n");
++		return {};
++	}
++
++	blkid_probe probe = blkid_new_probe_from_filename(node.device.c_str());
++	if (!probe) {
++		printf("Sony microSD: block probe unavailable errno=%d\n", errno);
++		return {};
++	}
++	const char* type = nullptr;
++	std::string filesystem;
++	if (blkid_do_safeprobe(probe) == 0 &&
++	    blkid_probe_lookup_value(probe, "TYPE", &type, nullptr) == 0 && type &&
++	    (strcmp(type, "vfat") == 0 || strcmp(type, "exfat") == 0))
++		filesystem = type;
++	blkid_free_probe(probe);
++	return filesystem;
++}
++
++static bool FindSonyMicroSd(std::string* device, std::string* filesystem,
++                            std::string* card_capacity = nullptr) {
++	const bool host = access(kSonyMicroSdHost, F_OK) == 0;
++	printf("Sony microSD: host_visible=%d\n", host);
++	if (!host)
++		return false;
++
++	std::unique_ptr<DIR, decltype(&closedir)> blocks(opendir("/sys/class/block"), closedir);
++	if (!blocks) {
++		printf("Sony microSD: block list unavailable errno=%d\n", errno);
++		return false;
++	}
++	std::vector<SonyMicroSdNode> nodes;
++	bool has_partitions = false;
++	while (const auto* entry = readdir(blocks.get())) {
++		const std::string name(entry->d_name);
++		if (name.compare(0, sizeof("mmcblk") - 1, "mmcblk") != 0)
++			continue;
++		const std::string link = "/sys/class/block/" + name;
++		std::unique_ptr<char, decltype(&free)> sysfs(realpath(link.c_str(), nullptr), free);
++		SonyMicroSdNode node;
++		std::string card;
++		std::string card_type;
++		if (sysfs && ParseSonyMicroSdNode(sysfs.get(), name, &node, &card) &&
++		    android::base::ReadFileToString(card + "/type", &card_type) &&
++		    android::base::Trim(card_type) == "SD") {
++			has_partitions |= node.partition;
++			nodes.push_back(std::move(node));
++		}
++	}
++
++	if (card_capacity) {
++		// The kernel exposes block device sizes in 512-byte sectors, including
++		// on media with a larger logical sector size.
++		size_t disks = 0;
++		uint64_t disk_sectors = 0;
++		for (const auto& node : nodes) {
++			std::string value;
++			uint64_t sectors = 0;
++			if (android::base::ReadFileToString(node.sysfs + "/size", &value) &&
++			    android::base::ParseUint(android::base::Trim(value), &sectors)) {
++				printf("Sony microSD: device=%s sectors_512=%" PRIu64 "\n",
++				       node.device.c_str(), sectors);
++			}
++			if (!node.partition) {
++				++disks;
++				disk_sectors = sectors;
++			}
++		}
++		if (disks == 1 && disk_sectors != 0)
++			*card_capacity = std::to_string(disk_sectors / 2048) + " MiB";
++	}
++
++	size_t portable = 0;
++	for (const auto& node : nodes) {
++		if (has_partitions && !node.partition)
++			continue;
++		const auto detected = SonyPortableFileSystem(node);
++		if (detected.empty())
++			continue;
++		*device = node.device;
++		*filesystem = detected;
++		++portable;
++	}
++	printf("Sony microSD: block_nodes=%zu portable_volumes=%zu\n", nodes.size(), portable);
++	return portable == 1;
++}
++
++static std::string SonyStorageCapacity(const struct statvfs& info) {
++	constexpr unsigned long long mib = 1024 * 1024;
++	const auto free = static_cast<unsigned long long>(info.f_bavail) * info.f_frsize / mib;
++	const auto total = static_cast<unsigned long long>(info.f_blocks) * info.f_frsize / mib;
++	return std::to_string(free) + " MiB free / " + std::to_string(total) + " MiB total";
++}
++
++static void InitSonyStorageStatus() {
++	DataManager::SetValue("tw_xperia_storage_status", 1);
++	DataManager::SetValue("tw_xperia_storage_data", "Not verified");
++	DataManager::SetValue("tw_xperia_storage_data_capacity", "Unavailable until CE verification");
++	DataManager::SetValue("tw_xperia_storage_metadata", "Not verified");
++	DataManager::SetValue("tw_xperia_storage_vendor", "Not verified");
++	DataManager::SetValue("tw_xperia_storage_card_size", "Capacity unavailable");
++	DataManager::SetValue("tw_xperia_storage_card", "No usable portable volume verified");
++	DataManager::SetValue("tw_xperia_storage_card_capacity", "Capacity unavailable");
++	DataManager::SetValue("tw_xperia_storage_slot", PartitionManager.Get_Active_Slot_Display());
++	std::string detected;
++	for (const char* path : {"/boot", "/init_boot", "/vendor_boot", "/recovery", "/dtbo"}) {
++		const auto* partition = PartitionManager.Find_Partition_By_Path(path);
++		struct stat device {};
++		if (!partition || !partition->Is_Present ||
++		    stat(partition->Actual_Block_Device.c_str(), &device) != 0 || !S_ISBLK(device.st_mode))
++			continue;
++		if (!detected.empty())
++			detected += ", ";
++		detected += path + 1;
++	}
++	DataManager::SetValue("tw_xperia_storage_blocks", detected.empty() ? "None verified" : detected);
++}
++
++static std::string sony_verified_sd_device;
++static std::string sony_verified_sd_filesystem;
++constexpr char kSonyNativeSdMount[] = "/external_sd";
++
++static bool ProbeSonyMicroSd() {
++	std::string device;
++	std::string filesystem;
++	std::string card_capacity;
++	const bool show_status = DataManager::GetIntValue("tw_xperia_storage_status") == 1;
++	const bool found = FindSonyMicroSd(&device, &filesystem, show_status ? &card_capacity : nullptr);
++	if (!card_capacity.empty())
++		DataManager::SetValue("tw_xperia_storage_card_size", card_capacity);
++	if (!found)
++		return false;
++
++	char target[] = "/tmp/xperia-microsd.XXXXXX";
++	if (!mkdtemp(target)) {
++		printf("Sony microSD: temporary mountpoint failed errno=%d\n", errno);
++		return false;
++	}
++	constexpr unsigned long flags = MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC;
++	const bool mounted = mount(device.c_str(), target, filesystem.c_str(), flags, nullptr) == 0;
++	const int mount_error = mounted ? 0 : errno;
++	struct statvfs info {};
++	constexpr unsigned long required = ST_RDONLY | ST_NOSUID | ST_NODEV | ST_NOEXEC;
++	const bool verified = mounted && statvfs(target, &info) == 0 &&
++	                      (info.f_flag & required) == required;
++	const auto available = verified
++	    ? static_cast<unsigned long long>(info.f_bavail) * info.f_frsize : 0;
++	const bool unmounted = !mounted || umount(target) == 0;
++	const bool cleaned = unmounted && rmdir(target) == 0;
++	printf("Sony microSD: filesystem=%s mount_errno=%d flags_verified=%d free_bytes=%llu cleaned=%d\n",
++	       filesystem.c_str(), mount_error, verified, available, cleaned);
++	if (verified && cleaned && show_status) {
++		sony_verified_sd_device = device;
++		sony_verified_sd_filesystem = filesystem;
++		const auto name = device.substr(sizeof("/dev/block/") - 1);
++		DataManager::SetValue("tw_xperia_storage_card", "Backup volume: " + name + " (" + filesystem + ")");
++		DataManager::SetValue("tw_xperia_storage_card_capacity", SonyStorageCapacity(info));
++	}
++	return verified && cleaned;
++}
++
++struct SonyCeProbe {
++	std::string* credential = nullptr;
++	int credential_type = 0;
++	bool protector_unwrapped = false;
++	std::string data_capacity;
++	std::vector<android::fscrypt::EncryptionPolicy> retained_policies;
++};
++
++static bool SonyCePolicyMatches(const std::string& path,
++                               const android::fscrypt::EncryptionPolicy& policy) {
++	const int fd = open(path.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
++	if (fd < 0) {
++		printf("Sony CE policy: directory errno=%d\n", errno);
++		return false;
++	}
++	struct fscrypt_get_policy_ex_arg query {};
++	query.policy_size = sizeof(query.policy);
++	const int error = ioctl(fd, FS_IOC_GET_ENCRYPTION_POLICY_EX, &query) == 0 ? 0 : errno;
++	close(fd);
++	const bool matches = error == 0 && query.policy.version == FSCRYPT_POLICY_V2 &&
++	                     query.policy_size == sizeof(query.policy.v2) &&
++	                     policy.key_raw_ref.size() == FSCRYPT_KEY_IDENTIFIER_SIZE &&
++	                     memcmp(policy.key_raw_ref.data(), query.policy.v2.master_key_identifier,
++	                            FSCRYPT_KEY_IDENTIFIER_SIZE) == 0;
++	printf("Sony CE policy: ioctl_errno=%d identifier_matches=%d\n", error, matches);
++	return matches;
++}
++
++static bool VerifySonyCeKey(const std::string& mount_path,
++                            const android::fscrypt::EncryptionOptions& options,
++                            SonyCeProbe* ce) {
++	std::string secret_hex;
++	android::vold::KeyBuffer wrapped_key;
++	ce->protector_unwrapped = android::keystore::UnlockSonyReadOnlyCe(mount_path, *ce->credential, &secret_hex);
++	const bool retrieved = ce->protector_unwrapped &&
++	    fscrypt_retrieve_ce_key_read_only(mount_path, 0, secret_hex, &wrapped_key);
++	OPENSSL_cleanse(ce->credential->data(), ce->credential->size());
++	ce->credential->clear();
++	OPENSSL_cleanse(secret_hex.data(), secret_hex.size());
++	printf("Sony CE probe: wrapped user key retrieved=%d\n", retrieved);
++	if (!retrieved)
++		return false;
++
++	android::vold::KeyBuffer ephemeral_key;
++	android::fscrypt::EncryptionPolicy policy;
++	const bool installed =
++	    android::vold::exportWrappedStorageKeyWithoutUpgrade(wrapped_key, &ephemeral_key) &&
++	    android::vold::installKey(mount_path, options, ephemeral_key, &policy);
++	printf("Sony CE probe: user key installed=%d\n", installed);
++	if (!installed)
++		return false;
++
++	const bool matches = SonyCePolicyMatches(mount_path + "/media/0", policy);
++	if (matches) {
++		ce->retained_policies.push_back(std::move(policy));
++		return true;
++	}
++	const bool evicted = android::vold::evictKey(mount_path, policy);
++	printf("Sony CE probe: user key evicted=%d\n", evicted);
++	return matches && evicted;
++}
++
++static bool ProbeSonyDeKeys(const char* target, SonyCeProbe* ce) {
++	if (access("/xperia_de_key_probe", F_OK) != 0)
++		return false;
++
++	android::fs_mgr::Fstab fstab;
++	if (!android::fs_mgr::ReadFstabFromFile("/system/etc/fstab.xperia", &fstab)) {
++		printf("Sony DE probe: fstab unavailable\n");
++		return false;
++	}
++	const auto* entry = android::fs_mgr::GetEntryForMountPoint(&fstab, target);
++	android::fscrypt::EncryptionOptions options;
++	if (!entry || !android::fscrypt::ParseOptions(entry->encryption_options, &options) ||
++	    options.version != 2 || !options.use_hw_wrapped_key) {
++		printf("Sony DE probe: unsupported encryption policy\n");
++		return false;
++	}
++
++	const std::string mount_path(target);
++	android::fscrypt::EncryptionPolicy device_policy;
++	const bool device_installed =
++	    InstallSonyProbeKey(mount_path + "/unencrypted/key", target, options, &device_policy);
++	printf("Sony DE probe: system key installed=%d\n", device_installed);
++	if (!device_installed)
++		return false;
++
++	std::ifstream reference(mount_path + fscrypt_key_ref, std::ios::binary);
++	std::string expected(device_policy.key_raw_ref.size(), '\0');
++	const bool reference_matches = reference.read(expected.data(), expected.size()) &&
++	                               reference.peek() == std::char_traits<char>::eof() &&
++	                               expected == device_policy.key_raw_ref;
++	printf("Sony DE probe: system key matches existing filesystem reference=%d\n", reference_matches);
++
++	android::fscrypt::EncryptionPolicy user_policy;
++	const bool user_installed =
++	    InstallSonyProbeKey(mount_path + "/misc/vold/user_keys/de/0", target, options, &user_policy);
++	printf("Sony DE probe: user 0 device-encrypted key installed=%d\n", user_installed);
++	bool verified = reference_matches && user_installed;
++	if (verified && ce) {
++		if (ce->credential) {
++			verified = VerifySonyCeKey(mount_path, options, ce);
++		} else {
++			ce->credential_type = android::keystore::GetSonyReadOnlyCredentialType(mount_path);
++			verified = ce->credential_type != 0;
++			printf("Sony CE UI: supported local credential=%d\n", verified);
++		}
++	} else if (verified && access("/xperia_ce_preflight", F_OK) == 0) {
++		KeystoreInfo keystore;
++		const bool hardware_probe = access("/xperia_ce_keymint_preflight", F_OK) == 0;
++		auto blob = keystore.probeUserProtector(mount_path, 0, hardware_probe);
++		if (hardware_probe)
++			ProbeSonyProtectorHardware(blob);
++	}
++	if (verified && ce && !ce->retained_policies.empty()) {
++		ce->retained_policies.push_back(std::move(user_policy));
++		ce->retained_policies.push_back(std::move(device_policy));
++		return true;
++	}
++	const bool user_evicted = !user_installed || android::vold::evictKey(target, user_policy);
++	const bool device_evicted = android::vold::evictKey(target, device_policy);
++	if (!user_evicted)
++		printf("Sony DE probe: user 0 key eviction failed\n");
++	if (!device_evicted)
++		printf("Sony DE probe: system key eviction failed\n");
++	return verified && user_evicted && device_evicted;
++}
++
++constexpr char kSonyMetadataMapper[] = "userdata";
++constexpr char kSonyUserdataMount[] = "/data";
++static std::vector<android::fscrypt::EncryptionPolicy> sony_browse_policies;
++
++// Retained policy identifiers are not proof that keys survived unmount.
++static bool SonyBrowseKeysPresent() {
++    if (sony_browse_policies.size() != 3)
++        return false;
++    for (const auto& policy : sony_browse_policies) {
++        if (policy.options.version != 2 ||
++            policy.key_raw_ref.size() != FSCRYPT_KEY_IDENTIFIER_SIZE)
++            return false;
++    }
++    const int fd = open(kSonyUserdataMount, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
++    if (fd < 0)
++        return false;
++    bool present = true;
++    for (const auto& policy : sony_browse_policies) {
++        struct fscrypt_get_key_status_arg status {};
++        status.key_spec.type = FSCRYPT_KEY_SPEC_TYPE_IDENTIFIER;
++        memcpy(status.key_spec.u.identifier, policy.key_raw_ref.data(), FSCRYPT_KEY_IDENTIFIER_SIZE);
++        if (ioctl(fd, FS_IOC_GET_ENCRYPTION_KEY_STATUS, &status) != 0 ||
++            status.status != FSCRYPT_KEY_STATUS_PRESENT) {
++            present = false;
++            break;
++        }
++    }
++    close(fd);
++    return present;
++}
++
++static bool EvictSonyBrowseKeys(const std::vector<android::fscrypt::EncryptionPolicy>& policies) {
++	bool evicted = true;
++	for (const auto& policy : policies)
++		evicted = android::vold::evictKey(kSonyUserdataMount, policy) && evicted;
++	return evicted;
++}
++
++static bool sony_native_policy_maps_owned = false;
++static std::string sony_owned_data_device;
++
++static void ClearSonyNativePolicyMaps() {
++    if (!sony_native_policy_maps_owned)
++        return;
++    s_ce_policies.erase(0);
++    s_de_policies.erase(0);
++    de_key_raw_ref.clear();
++    sony_native_policy_maps_owned = false;
++}
++
++static bool RegisterSonyNativePolicyMaps(
++        const std::vector<android::fscrypt::EncryptionPolicy>& policies) {
++    // ProbeSonyDeKeys retains user CE, user DE, then system DE, in that order.
++    // These are policy identifiers, not credential or encryption-key bytes.
++    if (policies.size() != 3 || sony_native_policy_maps_owned ||
++        !de_key_raw_ref.empty() || s_ce_policies.count(0) || s_de_policies.count(0))
++        return false;
++    for (const auto& policy : policies) {
++        if (policy.options.version != 2 ||
++            policy.key_raw_ref.size() != FSCRYPT_KEY_IDENTIFIER_SIZE)
++            return false;
++    }
++    if (policies[0].key_raw_ref == policies[1].key_raw_ref ||
++        policies[0].key_raw_ref == policies[2].key_raw_ref ||
++        policies[1].key_raw_ref == policies[2].key_raw_ref)
++        return false;
++    s_ce_policies.emplace(0, UserPolicies{policies[0], {}});
++    s_de_policies.emplace(0, UserPolicies{policies[1], {}});
++    de_key_raw_ref = policies[2].key_raw_ref;
++    sony_native_policy_maps_owned = true;
++    return true;
++}
++
++static bool RegisterSonyNativeData() {
++    std::string device;
++    if (!android::dm::DeviceMapper::Instance().GetDmDevicePathByName(kSonyMetadataMapper, &device))
++        return false;
++    const bool registered = PartitionManager.Adopt_Decrypted_Data(device);
++    if (registered) sony_owned_data_device = device;
++    printf("Sony CE data: native_data_registered=%d\n", registered);
++    if (!registered) {
++        const int available = klogctl(10, nullptr, 0);
++        const int capacity = available > 0 ? std::min(available, 16 * 1024 * 1024) : 512 * 1024;
++        std::vector<char> buffer(capacity);
++        const int bytes = klogctl(3, buffer.data(), buffer.size());
++        if (bytes < 0) {
++            printf("Sony Data scan AVC: kernel log unavailable errno=%d\n", errno);
++        } else {
++            const auto summaries = XperiaDataScanAvcSummary(std::string_view(buffer.data(), bytes));
++            for (const auto& summary : summaries)
++                printf("Sony Data scan AVC: %s\n", summary.c_str());
++            printf("Sony Data scan AVC: distinct recovery denials=%zu (kernel ring may include earlier events)\n", summaries.size());
++        }
++    }
++    if (registered && access("/xperia_load_probe", F_OK) == 0) {
++        std::vector<PartitionList> entries;
++        PartitionManager.Get_Partition_List("backup", &entries);
++        for (const auto& entry : entries)
++            printf("Native Backup after CE: %s -> %s\n", entry.Mount_Point.c_str(), entry.Display_Name.c_str());
++    }
++    return registered;
++}
++
++static void ReleaseSonyDecryptedData() {
++    if (sony_browse_policies.empty())
++        return;
++    // Evict while /data still names the filesystem holding these policies.
++    const bool keys_evicted = EvictSonyBrowseKeys(sony_browse_policies);
++    const bool data_released = PartitionManager.UnMount_By_Path(kSonyUserdataMount, false);
++    const bool mapper_released = data_released &&
++        android::dm::DeviceMapper::Instance().DeleteDevice(kSonyMetadataMapper);
++    ClearSonyNativePolicyMaps();
++    sony_browse_policies.clear();
++    printf("Sony CE data: keys_evicted=%d data_released=%d mapper_released=%d\n",
++           keys_evicted, data_released, mapper_released);
++}
++
++// Delete only the mapper we adopted, after all Data mounts are gone.
++// A busy mapper is deliberately retained; never use deferred/forced deletion.
++static bool ReleaseSonyUnmountedMapper() {
++    if (sony_owned_data_device.empty()) return true;
++    if (!sony_browse_policies.empty() || PartitionManager.Is_Mounted_By_Path("/data"))
++        return false;
++    auto& dm = android::dm::DeviceMapper::Instance();
++    if (dm.GetState(kSonyMetadataMapper) != android::dm::DmDeviceState::INVALID) {
++        std::string current;
++        if (!dm.GetDmDevicePathByName(kSonyMetadataMapper, &current) ||
++            current != sony_owned_data_device || !dm.DeleteDevice(kSonyMetadataMapper))
++            return false;
++    }
++    sony_owned_data_device.clear();
++    return true;
++}
++
++static bool MountSonyEncryptedData(SonyCeProbe* ce = nullptr) {
++	if (access("/xperia_metadata_probe", F_OK) != 0)
++		return false;
++    if (!ReleaseSonyUnmountedMapper()) {
++        printf("Sony Data: previous mapper is still busy or ownership changed\n");
++        return false;
++    }
++
++	constexpr char metadata[] = "/metadata";
++	const auto* dm_name = kSonyMetadataMapper;
++	const auto* target = kSonyUserdataMount;
++	constexpr unsigned long flags = MS_NOSUID | MS_NODEV;
++	auto& dm = android::dm::DeviceMapper::Instance();
++	if (dm.GetState(dm_name) != android::dm::DmDeviceState::INVALID) {
++		printf("Sony metadata probe: mapper already exists, stopping\n");
++		return false;
++	}
++	if (mount("/dev/block/by-name/metadata", metadata, "f2fs", flags, nullptr) < 0) {
++		printf("Sony metadata probe: metadata mount failed: %s\n", strerror(errno));
++		return false;
++	}
++	struct statvfs info {};
++	const bool metadata_writable = statvfs(metadata, &info) == 0 && !(info.f_flag & ST_RDONLY);
++	printf("Sony metadata probe: metadata writable=%d\n", metadata_writable);
++	if (metadata_writable && DataManager::GetIntValue("tw_xperia_storage_status") == 1)
++		DataManager::SetValue("tw_xperia_storage_metadata", "F2FS - mounted");
++	const bool mounted = metadata_writable && android::vold::fscrypt_mount_metadata_encrypted(
++	    "/dev/block/bootdevice/by-name/userdata", target, false, false, "f2fs", "",
++	    "/system/etc/fstab.xperia", "");
++	bool verified = false;
++	if (mounted) {
++		const bool writable = statvfs(target, &info) == 0 && !(info.f_flag & ST_RDONLY);
++		printf("Sony metadata probe: metadata-encrypted F2FS writable=%d\n", writable);
++		if (writable) {
++			verified = ProbeSonyDeKeys(target, ce);
++			if (ce)
++				ce->data_capacity = SonyStorageCapacity(info);
++		}
++	} else {
++		printf("Sony metadata probe: metadata-encrypted F2FS mount failed\n");
++	}
++	bool metadata_unmounted = false;
++	if (ce && !ce->retained_policies.empty()) {
++		metadata_unmounted = umount(metadata) == 0;
++        const bool policies_registered = verified && metadata_unmounted &&
++            RegisterSonyNativePolicyMaps(ce->retained_policies);
++        if (policies_registered && RegisterSonyNativeData()) {
++			sony_browse_policies = std::move(ce->retained_policies);
++			return true;
++		}
++        if (policies_registered) ClearSonyNativePolicyMaps();
++		EvictSonyBrowseKeys(ce->retained_policies);
++		ce->retained_policies.clear();
++		verified = false;
++	}
++	const bool unmounted = !mounted || umount(target) == 0;
++	if (!unmounted)
++		printf("Sony metadata probe: target unmount failed: %s\n", strerror(errno));
++	if (unmounted && dm.GetState(dm_name) != android::dm::DmDeviceState::INVALID &&
++	    !dm.DeleteDevice(dm_name)) {
++		printf("Sony metadata probe: mapper cleanup failed\n");
++	}
++	metadata_unmounted = metadata_unmounted || umount(metadata) == 0;
++	if (!metadata_unmounted)
++		printf("Sony metadata probe: metadata unmount failed: %s\n", strerror(errno));
++	const bool cleaned = metadata_unmounted && unmounted &&
++	                     dm.GetState(dm_name) == android::dm::DmDeviceState::INVALID;
++	if (cleaned)
++		printf("Sony metadata probe: temporary mounts and mapper released\n");
++	return verified && cleaned;
++}
++
++// Temporary read-only diagnostics for absent power_supply devices.
++static void LogSonyHealthKernel() {
++    for (const char* root : {"/vendor/firmware_mnt/image", "/vendor/firmware", "/firmware/image"}) {
++        for (const char* name : {"adsp.mdt", "adsp.b00", "adsp.b01", "adsp.b02", "adsp.b03", "adsp.b04", "adsp.b05"}) {
++            const std::string path = std::string(root) + "/" + name;
++            struct stat info {};
++            const int result = stat(path.c_str(), &info);
++            const int saved_errno = errno;
++            char* context = nullptr;
++            getfilecon(path.c_str(), &context);
++            printf("Sony ADSP firmware file: %s result=%d errno=%d size=%lld label=%s\n",
++                   path.c_str(), result, result ? saved_errno : 0,
++                   result ? -1LL : static_cast<long long>(info.st_size), context ? context : "unavailable");
++            freecon(context);
++        }
++    }
++    const char* firmware_path = "/sys/module/firmware_class/parameters/path";
++    std::ifstream firmware_stream(firmware_path);
++    std::string configured_path;
++    if (std::getline(firmware_stream, configured_path))
++        printf("Sony ADSP kernel search path: '%s'\n", configured_path.c_str());
++    else
++        printf("Sony ADSP kernel search path unreadable or empty, errno=%d\n", errno);
++    for (const char* path : {firmware_path, "/sys/class/remoteproc/remoteproc0/state"}) {
++        char* context = nullptr;
++        getfilecon(path, &context);
++        printf("Sony ADSP control label: %s %s\n", path, context ? context : "unavailable");
++        freecon(context);
++    }
++    for (int index = 0; index < 5; ++index) {
++        const std::string root = "/sys/class/remoteproc/remoteproc" + std::to_string(index);
++        for (const char* leaf : {"name", "state", "firmware"}) {
++            std::ifstream stream(root + "/" + leaf);
++            std::string value;
++            if (std::getline(stream, value))
++                printf("Sony health remoteproc%d %s=%s\n", index, leaf, value.c_str());
++        }
++    }
++    const int available = klogctl(10, nullptr, 0);
++    const int size = available > 0 ? std::min(available, 16 * 1024 * 1024) : 1024 * 1024;
++    std::vector<char> buffer(size);
++    const int count = klogctl(3, buffer.data(), buffer.size());
++    if (count < 0) {
++        printf("Sony health kernel unavailable: %s\n", strerror(errno));
++        return;
++    }
++    std::string_view rest(buffer.data(), count);
++    size_t printed = 0;
++    while (!rest.empty() && printed < 160) {
++        const size_t end = rest.find('\n');
++        const auto line = rest.substr(0, end);
++        if (line.find("battery") != std::string_view::npos ||
++            line.find("charger") != std::string_view::npos ||
++            line.find("pmic_glink") != std::string_view::npos ||
++            line.find("remoteproc") != std::string_view::npos ||
++            line.find("adsp") != std::string_view::npos ||
++            line.find("firmware") != std::string_view::npos ||
++            line.find("health") != std::string_view::npos) {
++            printf("Sony health kernel: %.*s\n", static_cast<int>(line.size()), line.data());
++            ++printed;
++        }
++        if (end == std::string_view::npos) break;
++        rest.remove_prefix(end + 1);
++    }
++}
++
++static void ProbeSonyFbeServices() {
++	if (access("/tmp/xperia-fbe-startup-failed", F_OK) == 0) {
++		printf("Sony FBE disabled after startup failure\n");
++		return;
++	}
++	if (access("/xperia_fbe_hal_probe", F_OK) != 0)
++		return;
++	const bool storage_status = access("/xperia_ce_local_ui", F_OK) == 0;
++	if (storage_status)
++		InitSonyStorageStatus();
++	if (PartitionManager.Find_Partition_By_Path("/data")) {
++		printf("Sony FBE probe requires a build without a userdata fstab entry\n");
++		return;
++	}
++	if (!PartitionManager.Mount_By_Path("/vendor", false)) {
++		printf("Sony FBE probe could not mount the read-only vendor partition\n");
++		return;
++	}
++	struct statvfs vendor {};
++	if (storage_status && statvfs("/vendor", &vendor) == 0 && (vendor.f_flag & ST_RDONLY))
++		DataManager::SetValue("tw_xperia_storage_vendor", "Read-only mount verified");
++	const bool services_started = property_get_bool("sys.xperia.fbe_probe", false);
++	if (!services_started && property_set("sys.xperia.fbe_probe", "1") != 0) {
++		printf("Sony FBE probe could not trigger security services\n");
++		return;
++	}
++
++	struct ProbeService {
++		const char* binder_name;
++		const char* init_state;
++		bool registered = false;
++	};
++	const auto probe = [](std::vector<ProbeService> services, int attempts) {
++		bool all_registered = false;
++		for (int attempt = 0; attempt < attempts; ++attempt) {
++			all_registered = true;
++			for (auto& service : services) {
++				::ndk::SpAIBinder binder(AServiceManager_checkService(service.binder_name));
++				service.registered = binder.get() != nullptr;
++				all_registered &= service.registered;
++			}
++			if (all_registered)
++				break;
++			std::this_thread::sleep_for(std::chrono::milliseconds(500));
++		}
++		for (const auto& service : services) {
++			char state[PROPERTY_VALUE_MAX];
++			property_get(service.init_state, state, "unset");
++			printf("Sony FBE probe %s: %s, init=%s\n", service.binder_name,
++			       service.registered ? "registered" : "unavailable", state);
++		}
++		return all_registered;
++	};
++	const bool hal_ready = probe({
++		{"vendor.qti.hardware.qseecom.IQSEECom/default", "init.svc.xperia_qsee_hal"},
++		{"android.hardware.security.keymint.IKeyMintDevice/default", "init.svc.xperia_keymint"},
++		{"android.hardware.gatekeeper.IGatekeeper/default", "init.svc.xperia_gatekeeper"},
++	}, 10);
++	if (services_started || access("/xperia_fbe_keystore_probe", F_OK) == 0) {
++		if (hal_ready && (services_started || property_set("sys.xperia.keystore_probe", "1") == 0)) {
++			const bool keystore_ready = probe({
++				{"android.system.keystore2.IKeystoreService/default", "init.svc.xperia_keystore2"},
++				{"android.security.authorization", "init.svc.xperia_keystore2"},
++			}, 30);
++			if (services_started && keystore_ready) {
++				if (access("/xperia_ce_local_ui", F_OK) == 0) {
++					SonyCeProbe ce;
++					if (MountSonyEncryptedData(&ce)) {
++						sony_ce_credential_type = ce.credential_type;
++						// Native Mount -> Decrypt Data selects the per-user credential type.
++						DataManager::SetValue("tw_crypto_pwtype_0", sony_ce_credential_type);
++						DataManager::SetValue("tw_xperia_storage_data", "F2FS detected - user 0 locked");
++					}
++				} else {
++					MountSonyEncryptedData();
++				}
++			}
++		} else {
++			printf("Sony FBE probe could not start Keystore2 after the HALs\n");
++		}
++	}
++	if (services_started)
++		ProbeSonyMicroSd();
++	ExportSonyStockKeystore();
++	LogSonyFbeProbeDiagnostics();
++}
++#endif
++
++bool XperiaDataKeysAvailable() {
++#ifdef TW_INCLUDE_CRYPTO
++    return SonyBrowseKeysPresent();
++#else
++    return false;
++#endif
++}
++
++void XperiaDataUnmounted() {
++#ifdef TW_INCLUDE_CRYPTO
++    // Called only after a successful unmount of our adopted Data partition.
++    ClearSonyNativePolicyMaps();
++    sony_browse_policies.clear();
++    printf("Sony Data: unmounted; local credential required for next mount\n");
++#endif
++}
++
++bool XperiaRequestDataUnlock() {
++#ifdef TW_INCLUDE_CRYPTO
++    if (!sony_ce_credential_type) return false;
++    DataManager::SetValue("tw_xperia_ce_test", 1);
++    DataManager::SetValue("tw_xperia_ce_storage_error", 0);
++    DataManager::SetValue("tw_crypto_user_id", "0");
++    DataManager::SetValue(TW_CRYPTO_PWTYPE, sony_ce_credential_type);
++    DataManager::SetValue("tw_password_fail", 0);
++    DataManager::SetValue("tw_page_done", 0);
++    gui_changePage("decrypt");
++    return true;
++#else
++    return false;
++#endif
++}
++
++bool XperiaCheckCeFromGui([[maybe_unused]] std::string& password) {
++#ifdef TW_INCLUDE_CRYPTO
++    bool verified = SonyBrowseKeysPresent();
++    // Do not report success or try to re-create an already owned mapper when
++    // its previous filesystem keyring has disappeared. Re-auth handoff must
++    // explicitly release that mount before a new credential attempt.
++    if (!verified && !sony_browse_policies.empty()) {
++        gui_err("decrypt_keys_missing=Data encryption keys are no longer available. Restart recovery and unlock again.");
++    } else if (!verified && sony_ce_credential_type != 0 && !password.empty()) {
++        SonyCeProbe ce;
++        ce.credential = &password;
++        verified = MountSonyEncryptedData(&ce);
++        if (!verified && ce.protector_unwrapped)
++            gui_err("decrypt_storage_failed=Credential accepted, but Data could not be mounted.");
++    }
++    OPENSSL_cleanse(password.data(), password.size());
++    password.clear();
++    return verified;
++#else
++    return false;
++#endif
++}
++
++#if defined(__aarch64__)
++static int LogDisplayModule(dl_phdr_info* info, size_t, void*) {
++	const char* path = info->dlpi_name;
++	if (!*path || strstr(path, "/recovery") || strstr(path, "/libminuitwrp.so") ||
++	    strstr(path, "/libc.so") || strstr(path, "/libpng.so") || strstr(path, "/libft2.so")) {
++		fprintf(stderr, "TWRP module %p %s\n", reinterpret_cast<void*>(info->dlpi_addr),
++		        *path ? path : "/system/bin/recovery");
++	}
++	return 0;
++}
++
++static void WriteCrashAddress(const char* label, size_t label_size, uintptr_t value) {
++	constexpr char digits[] = "0123456789abcdef";
++	char line[2 * sizeof(value) + 1];
++	for (size_t index = sizeof(line) - 1; index > 0; --index) {
++		line[index - 1] = digits[value & 0xf];
++		value >>= 4;
++	}
++	line[sizeof(line) - 1] = '\n';
++	write(STDERR_FILENO, label, label_size);
++	write(STDERR_FILENO, line, sizeof(line));
++}
++
++static void TraceDisplayCrash(int signal_number, siginfo_t*, void* context) {
++	const auto& machine = static_cast<const ucontext_t*>(context)->uc_mcontext;
++	constexpr char pc[] = "TWRP crash pc=0x";
++	constexpr char lr[] = "TWRP crash lr=0x";
++	WriteCrashAddress(pc, sizeof(pc) - 1, machine.pc);
++	WriteCrashAddress(lr, sizeof(lr) - 1, machine.regs[30]);
++	_exit(128 + signal_number);
++}
++
++static void EnableDisplayCrashTrace() {
++	dl_iterate_phdr(LogDisplayModule, nullptr);
++	struct sigaction handler = {};
++	handler.sa_sigaction = TraceDisplayCrash;
++	handler.sa_flags = SA_SIGINFO;
++	sigemptyset(&handler.sa_mask);
++	sigaction(SIGSEGV, &handler, nullptr);
++	sigaction(SIGBUS, &handler, nullptr);
++}
++#endif
++
+ int main(int argc, char **argv) {
+ 	// Recovery needs to install world-readable files, so clear umask
+ 	// set by init
+@@ -373,6 +1400,37 @@ int main(int argc, char **argv) {
+ 	datamedia = true;
+ #endif
+ 
++
++	time_t StartupTime = time(NULL);
++	printf("Starting TWRP %s-%s on %s (pid %d)\n", TW_VERSION_STR, TW_GIT_REVISION, ctime(&StartupTime), getpid());
++
++	// Load default values to set DataManager constants and handle ifdefs
++	DataManager::SetDefaultValues();
++	// Sony service bootstrap must not consume BCB/startup arguments or open a GUI.
++	// Invoked only by a separate init oneshot service.
++	if (argc == 2 && strcmp(argv[1], "--xperia-service-bootstrap") == 0) {
++		if (access("/xperia_fbe_hal_probe", F_OK) != 0)
++			return EXIT_FAILURE;
++		const char* fstab = access("/etc/twrp.fstab", F_OK) == 0
++		    ? "/etc/twrp.fstab" : "/etc/recovery.fstab";
++		if (!PartitionManager.Process_Fstab(fstab, 1, true) ||
++		    !PartitionManager.Mount_By_Path("/vendor", false))
++			return EXIT_FAILURE;
++		struct statvfs vendor {};
++		if (statvfs("/vendor", &vendor) != 0 || !(vendor.f_flag & ST_RDONLY)) {
++			printf("Sony bootstrap: vendor is not verified read-only\n");
++			return EXIT_FAILURE;
++		}
++		if (property_set("sys.xperia.fbe_probe", "1") != 0)
++			return EXIT_FAILURE;
++		printf("Sony bootstrap: security service startup requested\n");
++		return EXIT_SUCCESS;
++	}
++	// The main process owns Binder callbacks used by AIDL health and service caching.
++	if (!ABinderProcess_setThreadPoolMaxThreadCount(1))
++		LOGERR("Unable to configure recovery Binder thread pool\n");
++	ABinderProcess_startThreadPool();
++	// Publish GUI identity only after the service-only bootstrap has returned.
+ 	property_set("ro.twrp.boot", "1");
+ 	property_set("ro.twrp.version", TW_VERSION_STR);
+ 
+@@ -380,11 +1438,6 @@ int main(int argc, char **argv) {
+ 	property_set("ro.twrp.target.devices", TARGET_OTA_ASSERT_DEVICE);
+ #endif
+ 
+-	time_t StartupTime = time(NULL);
+-	printf("Starting TWRP %s-%s on %s (pid %d)\n", TW_VERSION_STR, TW_GIT_REVISION, ctime(&StartupTime), getpid());
+-
+-	// Load default values to set DataManager constants and handle ifdefs
+-	DataManager::SetDefaultValues();
+ 	startupArgs startup;
+ 	startup.parse(&argc, &argv);
+ 	android::base::SetProperty(TW_FASTBOOT_MODE_PROP, startup.Get_Fastboot_Mode() ? "1" : "0");
+@@ -410,8 +1463,17 @@ int main(int argc, char **argv) {
+ 	}
+ #endif
+ 
++#ifdef TW_INCLUDE_CRYPTO
++	ProbeSonyFbeServices();
++	LogSonyHealthKernel();
++#endif
++
+ 	printf("Starting the UI...\n");
+-	gui_init();
++#if defined(__aarch64__)
++	EnableDisplayCrashTrace();
++#endif
++	if (gui_init() != 0)
++		return EXIT_FAILURE;
+ 
+ 	if (!startup.Get_Fastboot_Mode()) PartitionManager.Setup_Fstab_Partitions(true);
+ 
+@@ -470,6 +1532,7 @@ int main(int argc, char **argv) {
+ 			DataManager::SetValue("tw_battery", value);
+ 
+ 			// Sleep for a specified interval (e.g., 1 second) before checking again
++			SampleRecoveryCpuBounded();
+ 			std::this_thread::sleep_for(std::chrono::seconds(1));
+ 		}
+ 	};
+diff --git a/twrpApex.cpp b/twrpApex.cpp
+index 22da17a..d435cc7 100755
+--- a/twrpApex.cpp
++++ b/twrpApex.cpp
+@@ -1,6 +1,9 @@
+ #include "twrpApex.hpp"
+ #include "twrp-functions.hpp"
+ #include "common.h"
++#include <android-base/unique_fd.h>
++#include <selinux/selinux.h>
++#include <sys/klog.h>
+ 
+ namespace fs = std::filesystem;
+ 
+@@ -49,6 +52,18 @@ bool twrpApex::loadApexImages() {
+ 		return true;
+ 	}
+ 	if (!mountApexOnLoopbackDevices(apexFiles)) {
++        std::vector<char> kernel_log(1024 * 1024);
++        int size = klogctl(3, kernel_log.data(), kernel_log.size() - 1);
++        if (size > 0) {
++            kernel_log[size] = 0;
++            std::istringstream lines(kernel_log.data());
++            std::string line;
++            while (std::getline(lines, line)) {
++                if (line.find("avc:") != std::string::npos &&
++                    (line.find("loop") != std::string::npos || line.find("apex") != std::string::npos))
++                    LOGINFO("APEX mount diagnostic: %s\n", line.c_str());
++            }
++        }
+ 		LOGERR("Unable to create loop devices to mount apex files\n");
+ 		return false;
+ 	}
+@@ -74,9 +89,26 @@ std::string twrpApex::unzipImage(std::string file) {
+ 	}
+ 
+ 	std::string baseFile = basename(file.c_str());
+-	std::string path("/tmp/");
+-	path = path + baseFile;
+-	int fd = open(path.c_str(), O_WRONLY|O_CREAT|O_TRUNC, 0666);
++    const char* staging = "/tmp/twrp-apex";
++    if (mkdir(staging, 0700) != 0 && errno != EEXIST) {
++        LOGERR("Unable to create private APEX staging directory: %s\n", strerror(errno));
++        CloseArchive(handle);
++        return std::string();
++    }
++    struct stat staging_stat {};
++    if (lstat(staging, &staging_stat) != 0 || !S_ISDIR(staging_stat.st_mode) ||
++        staging_stat.st_uid != 0 || (staging_stat.st_mode & 0777) != 0700) {
++        LOGERR("Unsafe APEX staging directory\n");
++        CloseArchive(handle);
++        return std::string();
++    }
++    std::string path = std::string(staging) + "/" + baseFile;
++    int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600);
++    if (fd < 0) {
++        LOGERR("Unable to open APEX staging payload: %s\n", strerror(errno));
++        CloseArchive(handle);
++        return std::string();
++    }
+ 	ret = ExtractEntryToFile(handle, &entry, fd);
+ 	if (ret != 0) {
+ 		LOGERR("unable to extract %s\n", path.c_str());
+@@ -91,19 +123,48 @@ std::string twrpApex::unzipImage(std::string file) {
+ }
+ 
+ bool twrpApex::mountApexOnLoopbackDevices(std::vector<std::string> apexFiles) {
+-	int fd = open(LOOP_CONTROL, O_RDWR | O_CLOEXEC);
++	android::base::unique_fd fd(open(LOOP_CONTROL, O_RDWR | O_CLOEXEC));
+ 	if (fd < 0) {
+-		LOGERR("Unable to open %s device. Reason: %s\n", LOOP_CONTROL, strerror(errno));
++        const int open_error = errno;
++        struct stat st = {};
++        const int stat_result = lstat(LOOP_CONTROL, &st);
++        char *label = nullptr, *domain = nullptr;
++        lgetfilecon(LOOP_CONTROL, &label);
++        getcon(&domain);
++        LOGINFO("APEX access diagnostic: uid=%u gid=%u domain=%s path=%s label=%s lstat=%d mode=%o owner=%u:%u rdev=%u:%u\n",
++                getuid(), getgid(), domain ? domain : "unavailable", LOOP_CONTROL,
++                label ? label : "unavailable", stat_result, st.st_mode,
++                st.st_uid, st.st_gid, major(st.st_rdev), minor(st.st_rdev));
++        freecon(label);
++        freecon(domain);
++        // Temporary targeted diagnostics: read only kernel lines naming this device.
++        std::vector<char> kernel_log(1024 * 1024);
++        const int log_size = klogctl(3, kernel_log.data(), kernel_log.size() - 1);
++        if (log_size > 0) {
++            kernel_log[log_size] = 0;
++            std::istringstream lines(kernel_log.data());
++            std::string line;
++            while (std::getline(lines, line)) {
++                if (line.find("loop-control") != std::string::npos)
++                    LOGINFO("APEX kernel diagnostic: %s\n", line.c_str());
++            }
++        } else {
++            LOGINFO("APEX kernel diagnostic unavailable: %s\n", strerror(errno));
++        }
++        LOGERR("Unable to open %s device. Reason: %s\n", LOOP_CONTROL, strerror(open_error));
+ 		return false;
+ 	}
+ 
+-	size_t device_no = 0;
+ 	for (auto&& apexFile:apexFiles) {
+-		int num = ioctl(fd, LOOP_CTL_GET_FREE);
++		int num = ioctl(fd.get(), LOOP_CTL_GET_FREE);
++		if (num < 0) {
++			LOGERR("Unable to allocate loop device: %s\n", strerror(errno));
++			return false;
++		}
+ 		std::string loop_device = LOOP_BLOCK_DEVICE_DIR;
+ 		loop_device = loop_device + "loop" + std::to_string(num);
+ 		if (!TWFunc::Path_Exists(loop_device)) {
+-			int ret = mknod(loop_device.c_str(), S_IFBLK | S_IRUSR | S_IWUSR , makedev(7, device_no));
++			int ret = mknod(loop_device.c_str(), S_IFBLK | S_IRUSR | S_IWUSR , makedev(7, num));
+ 			if (ret != 0) {
+ 				LOGERR("Unable to create loop device: %s\n", loop_device.c_str());
+ 				return false;
+@@ -114,11 +175,10 @@ bool twrpApex::mountApexOnLoopbackDevices(std::vector<std::string> apexFiles) {
+ 			LOGINFO("Skipping non-existent apex file: %s\n", apexFile.c_str());
+ 			continue;
+ 		}
+-		bool load_result = loadApexImage(fileToMount, device_no);
++		bool load_result = loadApexImage(fileToMount, static_cast<size_t>(num));
+ 		if (!load_result) {
+ 			return false;
+ 		}
+-		device_no++;
+ 	}
+ 	return true;
+ }
+@@ -148,11 +208,18 @@ bool twrpApex::loadApexImage(std::string fileToMount, size_t loop_device_number)
+ 		return false;
+ 	}
+ 
++	off_t apex_size = lseek(fd, 0, SEEK_END);
++	if (apex_size <= 0) {
++		LOGERR("Unable to determine apex payload size: %s\n", fileToMount.c_str());
++		ioctl(loop_fd, LOOP_CLR_FD, 0);
++		close(fd);
++		close(loop_fd);
++		return false;
++	}
+ 	close(fd);
+ 
+ 	memset(&info, 0, sizeof(struct loop_info64));
+ 	strlcpy((char*)info.lo_crypt_name, "twrpApex", LO_NAME_SIZE);
+-	off_t apex_size = lseek(fd, 0, SEEK_END);
+ 	info.lo_sizelimit = apex_size;
+ 	if (ioctl(loop_fd, LOOP_SET_STATUS64, &info)) {
+ 		LOGERR("failed to mount loop: %s: %s\n", fileToMount.c_str(), strerror(errno));
+@@ -174,7 +241,7 @@ bool twrpApex::loadApexImage(std::string fileToMount, size_t loop_device_number)
+ 
+ 	bind_mount = bind_mount + basename(apex_cleaned_mount.c_str());
+ 
+-	int ret = mkdir(bind_mount.c_str(), 0666);
++	int ret = mkdir(bind_mount.c_str(), 0755);
+ 	if (ret != 0) {
+ 		LOGERR("Unable to create bind mount directory: %s\n", bind_mount.c_str());
+ 		return false;
+diff --git a/twrpTar.cpp b/twrpTar.cpp
+index 71a5b15..f5099a3 100755
+--- a/twrpTar.cpp
++++ b/twrpTar.cpp
+@@ -293,6 +293,7 @@ int twrpTar::createTarFork(pid_t *tar_fork_pid) {
+ 				reg.split_archives = 1;
+ 				reg.progress_pipe_fd = progress_pipe_fd;
+ 				reg.part_settings = part_settings;
++				reg.require_fscrypt_policy = require_fscrypt_policy;
+ 				LOGINFO("Creating unencrypted backup...\n");
+ 				if (createList((void*)&reg) != 0) {
+ 					LOGINFO("Error creating unencrypted backup.\n");
+@@ -338,6 +339,7 @@ int twrpTar::createTarFork(pid_t *tar_fork_pid) {
+ 				enc[i].split_archives = 1;
+ 				enc[i].progress_pipe_fd = progress_pipe_fd;
+ 				enc[i].part_settings = part_settings;
++				enc[i].require_fscrypt_policy = require_fscrypt_policy;
+ 				LOGINFO("Start encryption thread %i\n", i);
+ 				ret = pthread_create(&enc_thread[i], &tattr, createList, (void*)&enc[i]);
+ 				if (ret) {
+@@ -413,6 +415,7 @@ int twrpTar::createTarFork(pid_t *tar_fork_pid) {
+ 			reg.setsize(Total_Backup_Size);
+ 			reg.progress_pipe_fd = progress_pipe_fd;
+ 			reg.part_settings = part_settings;
++				reg.require_fscrypt_policy = require_fscrypt_policy;
+ 			if (Total_Backup_Size > MAX_ARCHIVE_SIZE && !part_settings->adbbackup) {
+ 				gui_msg("split_backup=Breaking backup file into multiple archives...");
+ 				reg.split_archives = 1;
+@@ -661,48 +664,62 @@ int twrpTar::extractTarFork() {
+ }
+ 
+ int twrpTar::Generate_TarList(string Path, std::vector<TarListStruct> *TarList, unsigned long long *Target_Size, unsigned *thread_id) {
+-	DIR* d;
+-	struct dirent* de;
+-	struct stat st;
+-	string FileName;
+-	struct TarListStruct TarItem;
+-	int ret, file_count;
+-	file_count = 0;
+-
+-	d = opendir(Path.c_str());
+-	if (d == NULL) {
+-		gui_msg(Msg(msg::kError, "error_opening_strerr=Error opening: '{1}' ({2})")(Path)(strerror(errno)));
+-		closedir(d);
+-		return -1;
+-	}
+-	while ((de = readdir(d)) != NULL) {
+-		FileName = Path + "/" + de->d_name;
+-
+-		if (de->d_type == DT_BLK || de->d_type == DT_CHR || backup_exclusions->check_skip_dirs(FileName))
+-			continue;
+-		TarItem.fn = FileName;
+-		TarItem.thread_id = *thread_id;
+-		if (de->d_type == DT_DIR) {
+-			TarList->push_back(TarItem);
+-			ret = Generate_TarList(FileName, TarList, Target_Size, thread_id);
+-			if (ret < 0)
+-				return -1;
+-			file_count += ret;
+-		} else if (de->d_type == DT_REG || de->d_type == DT_LNK) {
+-			stat(FileName.c_str(), &st);
+-			TarList->push_back(TarItem);
+-			if (de->d_type == DT_REG) {
+-				file_count++;
+-				Archive_Current_Size += st.st_size;
+-			}
+-			if (Archive_Current_Size != 0 && *Target_Size != 0 && Archive_Current_Size > *Target_Size) {
+-				*thread_id = *thread_id + 1;
+-				Archive_Current_Size = 0;
+-			}
+-		}
+-	}
+-	closedir(d);
+-	return file_count;
++    DIR* d = opendir(Path.c_str());
++    if (!d) {
++        gui_msg(Msg(msg::kError, "error_opening_strerr=Error opening: '{1}' ({2})")(Path)(strerror(errno)));
++        return -1;
++    }
++    int file_count = 0;
++    for (;;) {
++        errno = 0;
++        struct dirent* de = readdir(d);
++        if (!de) {
++            int error = errno;
++            if (closedir(d) != 0 && !error) error = errno;
++            if (error) {
++                gui_msg(Msg(msg::kError, "error_opening_strerr=Error opening: '{1}' ({2})")(Path)(strerror(error)));
++                errno = error;
++                return -1;
++            }
++            return file_count;
++        }
++        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
++        string FileName = Path + "/" + de->d_name;
++        if (backup_exclusions->check_skip_dirs(FileName)) continue;
++        struct stat st;
++        if (lstat(FileName.c_str(), &st) != 0) {
++            int error = errno;
++            closedir(d);
++            gui_msg(Msg(msg::kError, "error_opening_strerr=Error opening: '{1}' ({2})")(FileName)(strerror(error)));
++            errno = error;
++            return -1;
++        }
++        TarListStruct TarItem;
++        TarItem.fn = FileName;
++        TarItem.thread_id = *thread_id;
++        if (S_ISDIR(st.st_mode)) {
++            TarList->push_back(TarItem);
++            int ret = Generate_TarList(FileName, TarList, Target_Size, thread_id);
++            if (ret < 0) {
++                int error = errno;
++                closedir(d);
++                errno = error;
++                return -1;
++            }
++            file_count += ret;
++        } else if (S_ISREG(st.st_mode) || S_ISLNK(st.st_mode)) {
++            TarList->push_back(TarItem);
++            if (S_ISREG(st.st_mode)) {
++                file_count++;
++                Archive_Current_Size += st.st_size;
++            }
++            if (Archive_Current_Size != 0 && *Target_Size != 0 && Archive_Current_Size > *Target_Size) {
++                *thread_id = *thread_id + 1;
++                Archive_Current_Size = 0;
++            }
++        }
++        // Preserve native archive scope: directories, regular files and links.
++    }
+ }
+ 
+ int twrpTar::extractTar() {
+@@ -900,6 +917,10 @@ int twrpTar::addFilesToExistingTar(vector <string> files, string fn) {
+ }
+ 
+ int twrpTar::createTar() {
++    int archive_flags = TWTAR_FLAGS;
++#ifdef USE_FSCRYPT
++    if (require_fscrypt_policy) archive_flags |= TAR_REQUIRE_FSCRYPT_POL | TAR_REQUIRE_METADATA;
++#endif
+ 	char* charTarFile = (char*) tarfn.c_str();
+ 	char* charRootDir = (char*) tardir.c_str();
+ 
+@@ -972,7 +993,7 @@ int twrpTar::createTar() {
+ 				fd = pipes[1];
+ 				init_libtar_no_buffer(progress_pipe_fd);
+ 				tar_type.writefunc = write_tar_no_buffer;
+-				if (tar_fdopen(&t, fd, charRootDir, &tar_type, O_CLOEXEC | O_WRONLY | O_CREAT | O_EXCL | O_LARGEFILE, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH, TWTAR_FLAGS) != 0) {
++				if (tar_fdopen(&t, fd, charRootDir, &tar_type, O_CLOEXEC | O_WRONLY | O_CREAT | O_EXCL | O_LARGEFILE, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH, archive_flags) != 0) {
+ 					close(fd);
+ 					LOGINFO("tar_fdopen failed\n");
+ 					gui_err("backup_error=Error creating backup.");
+@@ -1028,7 +1049,7 @@ int twrpTar::createTar() {
+ 			fd = pigzfd[1];   // copy parent output
+ 			init_libtar_no_buffer(progress_pipe_fd);
+ 			tar_type.writefunc = write_tar_no_buffer;
+-			if (tar_fdopen(&t, fd, charRootDir, &tar_type, O_CLOEXEC | O_WRONLY | O_CREAT | O_EXCL | O_LARGEFILE, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH, TWTAR_FLAGS) != 0) {
++			if (tar_fdopen(&t, fd, charRootDir, &tar_type, O_CLOEXEC | O_WRONLY | O_CREAT | O_EXCL | O_LARGEFILE, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH, archive_flags) != 0) {
+ 				close(fd);
+ 				LOGINFO("tar_fdopen failed\n");
+ 				gui_err("backup_error=Error creating backup.");
+@@ -1075,7 +1096,7 @@ int twrpTar::createTar() {
+ 			fd = oaesfd[1];   // copy parent output
+ 			init_libtar_no_buffer(progress_pipe_fd);
+ 			tar_type.writefunc = write_tar_no_buffer;
+-			if (tar_fdopen(&t, fd, charRootDir, &tar_type, O_CLOEXEC | O_WRONLY | O_CREAT | O_EXCL | O_LARGEFILE, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH, TWTAR_FLAGS) != 0) {
++			if (tar_fdopen(&t, fd, charRootDir, &tar_type, O_CLOEXEC | O_WRONLY | O_CREAT | O_EXCL | O_LARGEFILE, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH, archive_flags) != 0) {
+ 				close(fd);
+ 				LOGINFO("tar_fdopen failed\n");
+ 				gui_err("backup_error=Error creating backup.");
+@@ -1091,7 +1112,7 @@ int twrpTar::createTar() {
+ 			LOGINFO("Opening TW_ADB_BACKUP uncompressed stream\n");
+ 			tar_type.writefunc = write_tar_no_buffer;
+ 			output_fd = open(TW_ADB_BACKUP, O_WRONLY);
+-			if(tar_fdopen(&t, output_fd, charRootDir, &tar_type, O_CLOEXEC | O_WRONLY | O_CREAT | O_EXCL | O_LARGEFILE, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH, TWTAR_FLAGS) != 0) {
++			if(tar_fdopen(&t, output_fd, charRootDir, &tar_type, O_CLOEXEC | O_WRONLY | O_CREAT | O_EXCL | O_LARGEFILE, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH, archive_flags) != 0) {
+ 				close(output_fd);
+ 				LOGERR("tar_fdopen failed\n");
+ 				return -1;
+@@ -1099,7 +1120,7 @@ int twrpTar::createTar() {
+ 		}
+ 		else {
+ 			tar_type.writefunc = write_tar;
+-			if (tar_open(&t, charTarFile, &tar_type, O_CLOEXEC | O_WRONLY | O_CREAT | O_LARGEFILE, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH, TWTAR_FLAGS) == -1) {
++			if (tar_open(&t, charTarFile, &tar_type, O_CLOEXEC | O_WRONLY | O_CREAT | O_LARGEFILE, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH, archive_flags) == -1) {
+ 				LOGERR("tar_open error opening '%s'\n", tarfn.c_str());
+ 				gui_err("backup_error=Error creating backup.");
+ 				return -1;
+@@ -1110,6 +1131,7 @@ int twrpTar::createTar() {
+ }
+ 
+ int twrpTar::openTar() {
++	const int restore_flags = TWTAR_FLAGS | TAR_REQUIRE_METADATA;
+ 	char* charRootDir = (char*) tardir.c_str();
+ 	char* charTarFile = (char*) tarfn.c_str();
+ 	string Password;
+@@ -1181,7 +1203,7 @@ int twrpTar::openTar() {
+ 				close(pipes[1]);
+ 				close(pipes[3]);
+ 				fd = pipes[2];
+-				if (tar_fdopen(&t, fd, charRootDir, NULL, O_CLOEXEC | O_RDONLY | O_LARGEFILE, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH, TWTAR_FLAGS) != 0) {
++				if (tar_fdopen(&t, fd, charRootDir, NULL, O_CLOEXEC | O_RDONLY | O_LARGEFILE, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH, restore_flags) != 0) {
+ 					close(fd);
+ 					LOGINFO("tar_fdopen failed\n");
+ 					gui_err("restore_error=Error during restore process.");
+@@ -1226,7 +1248,7 @@ int twrpTar::openTar() {
+ 			// Parent
+ 			close(oaesfd[1]); // close parent output
+ 			fd = oaesfd[0];   // copy parent input
+-			if (tar_fdopen(&t, fd, charRootDir, NULL, O_CLOEXEC | O_RDONLY | O_LARGEFILE, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH, TWTAR_FLAGS) != 0) {
++			if (tar_fdopen(&t, fd, charRootDir, NULL, O_CLOEXEC | O_RDONLY | O_LARGEFILE, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH, restore_flags) != 0) {
+ 				close(fd);
+ 				LOGINFO("tar_fdopen failed\n");
+ 				gui_err("restore_error=Error during restore process.");
+@@ -1277,7 +1299,7 @@ int twrpTar::openTar() {
+ 			// Parent
+ 			close(pigzfd[1]); // close parent output
+ 			fd = pigzfd[0];   // copy parent input
+-			if (tar_fdopen(&t, fd, charRootDir, NULL, O_CLOEXEC | O_RDONLY | O_LARGEFILE, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH, TWTAR_FLAGS) != 0) {
++			if (tar_fdopen(&t, fd, charRootDir, NULL, O_CLOEXEC | O_RDONLY | O_LARGEFILE, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH, restore_flags) != 0) {
+ 				close(fd);
+ 				LOGINFO("tar_fdopen failed\n");
+ 				gui_err("restore_error=Error during restore process.");
+@@ -1288,14 +1310,14 @@ int twrpTar::openTar() {
+ 		if (part_settings->adbbackup) {
+ 			LOGINFO("Opening TW_ADB_RESTORE uncompressed stream\n");
+ 			input_fd = open(TW_ADB_RESTORE, O_RDONLY);
+-			if (tar_fdopen(&t, input_fd, charRootDir, NULL, O_CLOEXEC | O_RDONLY | O_LARGEFILE, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH, TWTAR_FLAGS) != 0) {
++			if (tar_fdopen(&t, input_fd, charRootDir, NULL, O_CLOEXEC | O_RDONLY | O_LARGEFILE, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH, restore_flags) != 0) {
+ 				LOGERR("Unable to open tar archive '%s'\n", charTarFile);
+ 				gui_err("restore_error=Error during restore process.");
+ 				return -1;
+ 			}
+ 		}
+ 		else {
+-			if (tar_open(&t, charTarFile, NULL, O_CLOEXEC | O_RDONLY | O_LARGEFILE, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH, TWTAR_FLAGS) != 0) {
++			if (tar_open(&t, charTarFile, NULL, O_CLOEXEC | O_RDONLY | O_LARGEFILE, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH, restore_flags) != 0) {
+ 				LOGERR("Unable to open tar archive '%s'\n", charTarFile);
+ 				gui_err("restore_error=Error during restore process.");
+ 				return -1;
+diff --git a/twrpTar.hpp b/twrpTar.hpp
+index eb82fa8..1b479e9 100644
+--- a/twrpTar.hpp
++++ b/twrpTar.hpp
+@@ -58,6 +58,7 @@ public:
+ 	void Set_Archive_Type(Archive_Type archive_type);
+ 
+ public:
++	bool require_fscrypt_policy = false; // FBE source must preserve every readable directory policy
+ 	int use_encryption;
+ 	int userdata_encryption;
+ 	int use_compression;
+diff --git a/bounded-load-sample.hpp b/bounded-load-sample.hpp
+new file mode 100755
+index 0000000..5ecd192
+--- /dev/null
++++ b/bounded-load-sample.hpp
+@@ -0,0 +1,33 @@
++#pragma once
++#include <cstdio>
++#include <time.h>
++#include <unistd.h>
++#include "thermal-load-snapshot.hpp"
++
++// Called by the existing one-second battery monitor, only in diagnostic images.
++// Process CPU clocks avoid /proc permissions and do not inspect user data.
++inline void SampleRecoveryCpuBounded() {
++    static const bool enabled = access("/xperia_load_probe", F_OK) == 0;
++    static unsigned samples = 0;
++    static double last_wall = 0, last_cpu = 0;
++    if (!enabled || samples >= 6) return;
++    timespec wall{}, cpu{};
++    if (clock_gettime(CLOCK_MONOTONIC, &wall) != 0 ||
++        clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &cpu) != 0) return;
++    const double now = wall.tv_sec + wall.tv_nsec / 1e9;
++    const double used = cpu.tv_sec + cpu.tv_nsec / 1e9;
++    if (last_wall == 0) {
++        last_wall = now;
++        last_cpu = used;
++        SnapshotXperiaThermalLoad();
++        return;
++    }
++    if (now - last_wall < 10) return;
++    std::printf("Xperia CPU sample: elapsed=%.3f cpu=%.3f percent_one_core=%.2f\n",
++                now - last_wall, used - last_cpu,
++                100 * (used - last_cpu) / (now - last_wall));
++    SnapshotXperiaThermalLoad();
++    last_wall = now;
++    last_cpu = used;
++    ++samples;
++}
+diff --git a/data-scan-avc-summary.hpp b/data-scan-avc-summary.hpp
+new file mode 100644
+index 0000000..97db004
+--- /dev/null
++++ b/data-scan-avc-summary.hpp
+@@ -0,0 +1,38 @@
++#pragma once
++#include <set>
++#include <string>
++#include <string_view>
++#include <vector>
++
++// Keep policy fields only; filenames and application paths are not diagnostic output.
++static std::vector<std::string> XperiaDataScanAvcSummary(std::string_view log) {
++    std::set<std::string> seen;
++    std::vector<std::string> result;
++    while (!log.empty()) {
++        const auto end = log.find('\n');
++        const auto line = log.substr(0, end);
++        const auto avc = line.find("avc:");
++        const auto denied = line.find("denied", avc);
++        const auto source = line.find("scontext=u:r:recovery:s0");
++        if (avc != std::string_view::npos && denied != std::string_view::npos &&
++            source != std::string_view::npos) {
++            const auto open = line.find('{', denied);
++            const auto close = line.find('}', open);
++            auto field = [&](std::string_view name) -> std::string {
++                const auto start = line.find(name);
++                if (start == std::string_view::npos) return {};
++                return std::string(line.substr(start, line.find_first_of(" \r", start) - start));
++            };
++            const auto target = field("tcontext=");
++            const auto type = field("tclass=");
++            if (open != std::string_view::npos && close != std::string_view::npos &&
++                !target.empty() && !type.empty()) {
++                const auto item = std::string(line.substr(open, close-open+1)) + " " + target + " " + type;
++                if (seen.insert(item).second && result.size() < 64) result.push_back(item);
++            }
++        }
++        if (end == std::string_view::npos) break;
++        log.remove_prefix(end+1);
++    }
++    return result;
++}
+diff --git a/named-thermal-sensor.hpp b/named-thermal-sensor.hpp
+new file mode 100644
+index 0000000..6dd87e6
+--- /dev/null
++++ b/named-thermal-sensor.hpp
+@@ -0,0 +1,25 @@
++#pragma once
++#include <dirent.h>
++#include <fstream>
++#include <string>
++
++// Match the kernel sensor name rather than a boot-dependent thermal zone number.
++inline std::string FindNamedThermalSensor(const std::string& root, const std::string& name) {
++    DIR* directory = opendir(root.c_str());
++    if (!directory) return {};
++    std::string result;
++    while (auto* entry = readdir(directory)) {
++        const std::string zone(entry->d_name);
++        if (zone.compare(0, 12, "thermal_zone") != 0) continue;
++        const auto path = root + "/" + zone;
++        std::ifstream type(path + "/type");
++        std::string sensor;
++        if (std::getline(type, sensor) && sensor == name) {
++            std::ifstream temperature(path + "/temp");
++            if (temperature.good()) result = path + "/temp";
++            break;
++        }
++    }
++    closedir(directory);
++    return result;
++}
+diff --git a/thermal-load-snapshot.hpp b/thermal-load-snapshot.hpp
+new file mode 100755
+index 0000000..67e847e
+--- /dev/null
++++ b/thermal-load-snapshot.hpp
+@@ -0,0 +1,80 @@
++#pragma once
++#include <cerrno>
++#include <cstdio>
++#include <cstring>
++#include <dirent.h>
++#include <string>
++
++// Read only fixed kernel telemetry files. Never inspect application data.
++inline std::string XperiaTelemetryRead(const std::string& path) {
++    FILE* file = std::fopen(path.c_str(), "r");
++    if (!file) return "unavailable(errno=" + std::to_string(errno) + ")";
++    char line[512];
++    const bool ok = std::fgets(line, sizeof(line), file) != nullptr;
++    const int error = errno;
++    std::fclose(file);
++    if (!ok) return "unavailable(read,errno=" + std::to_string(error) + ")";
++    line[std::strcspn(line, "\r\n")] = 0;
++    return line;
++}
++
++inline void SnapshotXperiaThermalLoad(const std::string& root = "") {
++    std::printf("Xperia system CPU counters: %s\n",
++                XperiaTelemetryRead(root + "/proc/stat").c_str());
++    const std::string cpu = root + "/sys/devices/system/cpu/cpufreq";
++    DIR* directory = opendir(cpu.c_str());
++    if (!directory) std::printf("Xperia cpufreq: unavailable errno=%d\n", errno);
++    if (directory) {
++        unsigned count = 0;
++        while (auto* entry = readdir(directory)) {
++            const std::string name(entry->d_name);
++            if (name.compare(0, 6, "policy") != 0 || count >= 16) continue;
++            ++count;
++            const auto path = cpu + "/" + name;
++            std::printf("Xperia cpufreq %s: current_kHz=%s min_kHz=%s max_kHz=%s governor=%s\n",
++                name.c_str(), XperiaTelemetryRead(path + "/scaling_cur_freq").c_str(),
++                XperiaTelemetryRead(path + "/scaling_min_freq").c_str(),
++                XperiaTelemetryRead(path + "/scaling_max_freq").c_str(),
++                XperiaTelemetryRead(path + "/scaling_governor").c_str());
++        }
++        closedir(directory);
++    }
++    const std::string thermal = root + "/sys/class/thermal";
++    directory = opendir(thermal.c_str());
++    if (!directory) std::printf("Xperia thermal: unavailable errno=%d\n", errno);
++    if (directory) {
++        unsigned count = 0;
++        while (auto* entry = readdir(directory)) {
++            const std::string name(entry->d_name);
++            if (name.compare(0, 12, "thermal_zone") != 0 || count >= 128) continue;
++            ++count;
++            const auto path = thermal + "/" + name;
++            const auto type = XperiaTelemetryRead(path + "/type");
++            if (type.find("cpuss") == std::string::npos && type.find("skin") == std::string::npos &&
++                type.find("battery") == std::string::npos && type.find("unavailable") == std::string::npos) continue;
++            std::printf("Xperia thermal %s: type=%s millidegrees=%s\n", name.c_str(),
++                type.c_str(), XperiaTelemetryRead(path + "/temp").c_str());
++        }
++        closedir(directory);
++    }
++    const std::string power = root + "/sys/class/power_supply";
++    directory = opendir(power.c_str());
++    if (!directory) std::printf("Xperia power_supply: unavailable errno=%d\n", errno);
++    if (directory) {
++        unsigned count = 0;
++        while (auto* entry = readdir(directory)) {
++            const std::string name(entry->d_name);
++            if (name[0] == '.' || count >= 32) continue;
++            ++count;
++            const auto path = power + "/" + name;
++            const auto type = XperiaTelemetryRead(path + "/type");
++            if (type != "Battery") continue;
++            std::printf("Xperia battery %s: temp_tenths_C=%s status=%s current_uA=%s voltage_uV=%s\n",
++                name.c_str(), XperiaTelemetryRead(path + "/temp").c_str(),
++                XperiaTelemetryRead(path + "/status").c_str(),
++                XperiaTelemetryRead(path + "/current_now").c_str(),
++                XperiaTelemetryRead(path + "/voltage_now").c_str());
++        }
++        closedir(directory);
++    }
++}
+diff --git a/thermal-value.hpp b/thermal-value.hpp
+new file mode 100755
+index 0000000..3021ab4
+--- /dev/null
++++ b/thermal-value.hpp
+@@ -0,0 +1,14 @@
++#pragma once
++#include <sstream>
++#include <string>
++
++// Kernel thermal-zone temperatures are signed millidegrees Celsius.
++inline bool ParseCpuThermalValue(const std::string& text, int& degrees) {
++    std::istringstream input(text);
++    long long milli;
++    if (!(input >> milli)) return false;
++    input >> std::ws;
++    if (!input.eof() || milli < -40000 || milli > 150000) return false;
++    degrees = static_cast<int>(milli / 1000);
++    return true;
++}

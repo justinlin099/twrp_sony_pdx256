@@ -1,0 +1,20 @@
+[
+  {
+    "path": "bootable/recovery",
+    "revision": "426b747737e7ce9e9e17da5b4d2ba883f296aec7",
+    "patch": "patches/bootable-recovery.patch",
+    "sha256": "335c9c813a3ac73368fc7d68efb2c0a78c80b0a4e47b118fe69a6ef2ea1af66d"
+  },
+  {
+    "path": "system/vold",
+    "revision": "8e2fb2556d9d4d0b2ad5fea2e301d7c445a1ddb5",
+    "patch": "patches/system-vold.patch",
+    "sha256": "31a3273c53d3b76e77f389ffcd409b8cdf244e16cdbc6ed14e2e6c6421b63614"
+  },
+  {
+    "path": "packages/modules/adb",
+    "revision": "255b3c3df04b8297a29036d7ac1241f12bb2c6aa",
+    "patch": "patches/packages-modules-adb.patch",
+    "sha256": "ee22287553e4e38bc5b06df47326ada13191051d4dde59d328cf7b82cd4a7767"
+  }
+]
