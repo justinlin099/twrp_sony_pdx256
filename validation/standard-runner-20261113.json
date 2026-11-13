@@ -1,0 +1,64 @@
+{
+  "run_url": "https://github.com/justinlin099/twrp_sony_pdx256/actions/runs/43466474712",
+  "conclusion": "success",
+  "repositories": {
+    "integration": "ad11c1b5a32634634cc55eba65e47e9a943aa4bc",
+    "device": "18c878d700b90919da9cfad1b63bb3d581caa16d",
+    "vendor": "257542edb3b6faa5eeb2893e3721ec9af6b8c1f7"
+  },
+  "runner": {
+    "label": "ubuntu-22.04",
+    "image_version": "20261111.360.2",
+    "os": "Ubuntu 22.04.5",
+    "standard_private_repo_vcpus": 2,
+    "ram_bytes": 8322981888,
+    "swap_bytes": 7516184576
+  },
+  "job_started_utc": "2026-11-13T16:48:52Z",
+  "job_completed_utc": "2026-11-13T18:42:22Z",
+  "durations_seconds": {
+    "source_sync": 585,
+    "compile_and_verify_step": 5798,
+    "build_sh": 5792,
+    "job": 6810
+  },
+  "source_projects": 657,
+  "resolved_manifest_matches_pins": true,
+  "fresh_source_and_output": true,
+  "compiler_cache_used": false,
+  "resources": {
+    "sample_interval_seconds": 30,
+    "samples": 193,
+    "initial_free_disk_bytes": 53374062592,
+    "minimum_sampled_free_disk_bytes": 2503155712,
+    "maximum_sampled_swap_used_bytes": 4352610304,
+    "time_maximum_rss_kib": 6841812
+  },
+  "image_bytes": 104857600,
+  "package_validation": {
+    "sha256": "f7dc9fc2ed1e72217a81ad9f323d4e08abc5275238edda7f31ad7094a2453f05",
+    "ramdisk_entries": 696,
+    "reference_content_differences": [
+      "sepolicy",
+      "system/bin/xperia_recovery_service_trace"
+    ],
+    "reference_identical": false,
+    "policy_cil_equivalent": true,
+    "reference_image_sha256": "9c800a77069b78c646cb97cee904e2b6d7410091e4e6b96a821f245c115ad4a1"
+  },
+  "downloaded_image_sha256": "f7dc9fc2ed1e72217a81ad9f323d4e08abc5275238edda7f31ad7094a2453f05",
+  "matches_latest_device_tested_image": true,
+  "flashed": false,
+  "artifact": {
+    "name": "twrp-pdx256-6",
+    "id": 14066003739,
+    "retention_days": 14
+  },
+  "evidence_sha256": {
+    "build.log": "e4a93344efa7bfc9bcd560dd0cb2de0980a77695a94213fe91a2b704c72444b5",
+    "sync.log": "f7f00b0742a3c9cc31fe1da9562dcb2e310011f23f1426da71525df5640c7d98",
+    "resources.log": "4d386ec327241710e8d94e3c72c3f6e62b9c221e7cc6273ade3ccf0e4b63c5d1",
+    "source-manifest.xml": "a5b137a882d85b9194228b881598b0b2856977edfddc0b9845092adc2a9780a5",
+    "recovery.json": "31c042e25bae0ef83a2d2103fead0c215d0912962b088c98d9c6a6747aa96ede"
+  }
+}

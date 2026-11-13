@@ -1,5 +1,8 @@
 # Clean GitHub rebuild validation - 2026-11-13
 
+A subsequent full build also passed on a standard GitHub-hosted runner and
+produced the same image. See the [CI validation](validation/standard-runner-20261113.md).
+
 **PASS:** a fresh Ubuntu userspace and fresh upstream download produced the same
 100 MiB image as the latest device-tested build, byte for byte.
 

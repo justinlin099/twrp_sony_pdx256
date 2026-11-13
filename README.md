@@ -19,6 +19,11 @@ and save the corresponding private keys as Actions secrets in the build reposito
 These secrets are already configured in this repository. The workflow uses a fresh
 checkout on every run; it does not need a phone, a self-hosted runner, or a build cache.
 
+[A complete standard-runner build passed](validation/standard-runner-20261113.md)
+in about 1 hour 54 minutes and produced the same image as the device-tested build.
+Artifacts are kept for 14 days. Download the image before they expire, or run the
+workflow again.
+
 ## Local build
 
 ## 1. Set up the environment

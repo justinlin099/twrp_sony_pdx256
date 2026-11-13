@@ -1,68 +1,55 @@
-# Standard GitHub runner feasibility - 2026-11-13
+# Standard GitHub runner build - 2026-11-13 UTC
 
-Selective toolchain downloads passed on a standard private-repository
-`ubuntu-22.04` runner. A complete recovery build has **not** been tested there.
+**PASS:** [Build TWRP #6](https://github.com/justinlin099/twrp_sony_pdx256/actions/runs/43466474712)
+completed a fresh source download, full compilation and image verification on a
+standard private-repository `ubuntu-22.04` runner. The downloaded image is
+byte-identical to the latest device-tested build and the local clean rebuild.
 
-## Measured runner capacity
+SHA-256: `f7dc9fc2ed1e72217a81ad9f323d4e08abc5275238edda7f31ad7094a2453f05`
 
-Image: `ubuntu22 20261111.360.2`; Ubuntu 22.04.5.
+## Measured result
 
 | Measurement | Result |
 | --- | ---: |
-| Available disk before cleanup | 13.6 GiB |
-| Available disk after removing unused preinstalled tools | 46.5 GiB |
-| RAM | 7.75 GiB |
-| Existing swap | 3 GiB |
-| Selected Rust checkout including Git objects | 2.32 GiB |
-| Selected Clang checkout including Git objects | 3.61 GiB |
-| Available disk after both toolchain downloads | 40.6 GiB |
+| Runner | Ubuntu 22.04.5, image `20261111.360.2`, 2 vCPU |
+| RAM / total swap | 7.75 GiB / 7 GiB |
+| Source download | 9m 45s |
+| Compile and verify step | 1h 36m 38s |
+| Job duration, including setup and finalization | 1h 53m 30s |
+| Free disk after runner cleanup | 49.7 GiB |
+| Lowest sampled free disk during build | 2.33 GiB |
+| Highest sampled swap use | 4.05 GiB |
+| Output image | 100 MiB |
 
-Cleanup removed preinstalled .NET, Android SDK, hosted tool caches, PowerShell,
-Swift, ghcup, global Node modules and Chromium only on the disposable hosted VM.
-These measurements are specific to this image; a build workflow must check free
-space rather than assume that future runners provide the same amount.
+Resources were sampled every 30 seconds. These are observed samples, not
+guaranteed instantaneous peaks. The workflow checks available disk space before
+downloading and compiling because hosted runner images can change.
 
-## Toolchain download test
+## Build inputs and checks
 
-Both repositories were cloned with `--filter=blob:none --no-checkout --depth=1`,
-then checked out using Git sparse checkout at the existing pinned revisions:
+- Integration revision: `ad11c1b5a32634634cc55eba65e47e9a943aa4bc`.
+- Device and vendor revisions came from `trees.lock.json`.
+- All 657 resolved upstream revisions matched `manifests/default.xml`.
+- Fresh checkout and empty build output; no compiler cache or phone-supplied files.
+- All 23,363 Ninja tasks completed; `build.sh` exited with status 0.
+- Factory/runtime hashes, 696 final CPIO records, policy equivalence, LZ4
+  round-trip and AVB signature/payload checks passed.
+- The downloaded image hash matches both `recovery.img.sha256` and `recovery.json`.
 
-- Rust: `4ebcd0d4c717e312c2773f4019e0874b994ac2b8`, keeping `linux-x86/1.75.0`.
-- Clang: `7154d3eddcb62ff7909a6ae2bf0c03e445e65bc4`, keeping `clang-r510928`.
+## Changes needed for this runner
 
-The Git revisions matched, and both `rustc --version` and `clang --version`
-executed successfully. The combined download occupied 5.93 GiB including Git
-objects, compared with about 30 GiB of worktree files alone in the full local
-Rust/Clang checkouts. The successful local build's Ninja dependency graph uses
-these same toolchain versions.
+The CI manifest sparsely checks out the required Clang, Rust, Linux JDK and
+arm64 ABI-dump files while retaining their build definitions and Soong plugins.
+After verifying all revisions, CI removes prebuilt Git objects. Runner cleanup
+and object pruning are restricted to disposable GitHub-hosted builds.
 
-Runs:
-- [Initial capacity measurement](https://github.com/justinlin099/twrp_sony_pdx256/actions/runs/43440925387)
-- [Cleanup and selective download test](https://github.com/justinlin099/twrp_sony_pdx256/actions/runs/43442201989)
+Soong analysis exceeded the original RAM and swap capacity. The workflow adds
+4 GiB swap to the runner's existing 3 GiB and keeps it throughout the build.
+A CI-only Soong patch forwards `GOMEMLIMIT=8GiB` through Blueprint's cleared
+environment. Recovery sources and the final image are unchanged by that patch.
+The final workflow invokes the existing `build.sh` once.
 
-## Remaining work before a full CI build
-
-The full local source, Git objects and output occupy about 90 GiB. In addition
-to sparse Rust/Clang downloads, a CI profile would need to reduce unused JDKs,
-ABI dump architectures/versions and misc prebuilts, and discard unneeded
-prebuilt Git objects after recording and verifying their revisions. Keep the
-Git metadata needed by patch preparation and AVB verification.
-
-A preliminary target is roughly 40-45 GiB including build output. This is an
-estimate, not a measured full-build peak. The slim checkout must retain build
-definitions and be tested through fresh Soong analysis and a complete build;
-the existing Ninja input list alone does not prove that pruning is safe.
-
-Start with two compile jobs, preserve swap, measure peak disk/memory use and
-verify the final image against the known build. The workflow also needs scoped
-read access to the two private companion repositories: the default
-`GITHUB_TOKEN` only covers the integration repository. No account token was
-copied into Actions secrets during this investigation.
-
-The one-off probe workflow was removed after collecting these results. The
-existing build scripts and manifest were not changed by this investigation.
-
-References:
-- [GitHub-hosted runner specifications](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
-- [Checkout authentication for private companion repositories](https://github.com/actions/checkout#checkout-multiple-repos-private)
-- [Git sparse checkout](https://git-scm.com/docs/git-sparse-checkout)
+The `twrp-pdx256-6` artifact contains the image, SHA-256, package report, resolved
+manifest, full logs and resource samples. Artifacts are retained for 14 days.
+Permanent measurements and input hashes are in
+[standard-runner-20261113.json](standard-runner-20261113.json).
