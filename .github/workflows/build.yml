@@ -85,7 +85,7 @@ jobs:
           LC_ALL: en_US.UTF-8
           LANG: en_US.UTF-8
           GOGC: '50'
-          GOMEMLIMIT: 5GiB
+          GOMEMLIMIT: 8GiB
         run: |
           set -euo pipefail
           while true; do
@@ -93,12 +93,16 @@ jobs:
               date -u +%FT%TZ
               df -B1 /
               free -b
+              ps -C soong_build -o pid,rss,vsz,etime,comm || true
             } | tee -a "$RUNNER_TEMP/artifacts/resources.log"
             sleep 30
           done &
           monitor=$!
           trap 'kill "$monitor" 2>/dev/null || true' EXIT
-          /usr/bin/time -v bash port/build.sh "$RUNNER_TEMP/source" "$RUNNER_TEMP/artifacts/recovery.img" 2 2>&1 | tee "$RUNNER_TEMP/artifacts/build.log"
+          {
+            /usr/bin/time -v bash port/tools/ci-prepare-graph.sh "$RUNNER_TEMP/source"
+            /usr/bin/time -v bash port/build.sh "$RUNNER_TEMP/source" "$RUNNER_TEMP/artifacts/recovery.img" 2
+          } 2>&1 | tee "$RUNNER_TEMP/artifacts/build.log"
           cd "$RUNNER_TEMP/artifacts"
           sha256sum recovery.img | tee recovery.img.sha256
           cat recovery.json >> "$GITHUB_STEP_SUMMARY"
