@@ -56,13 +56,28 @@ repo init -m pdx256-pinned.xml --no-clone-bundle
 repo sync -c -j8 --no-clone-bundle
 ```
 
-## 5. 編譯
+## 5. 套用補丁並編譯
+
+`build.sh` 會自動完成以下步驟，不需要先手動 `git apply`：
+
+1. 核對原廠相依檔與 ramdisk 檔案雜湊。
+2. 呼叫 `tools/prepare.py`，依 `patches/series.json` 將補丁套用到 `bootable/recovery`、`system/vold` 與 `packages/modules/adb`，並安裝 device tree。
+3. 執行 `lunch twrp_pdx256-ap2a-eng`，編譯 recovery 與所需函式庫。
+4. 封裝並驗證最終映像。
 
 ```bash
 bash "$PORT/build.sh" "$SOURCE" "$OUTPUT" 8
 ```
 
-最後的 `8` 是平行編譯數，可依電腦資源調整。腳本會自動套用補丁、編譯與封裝。
+最後的 `8` 是平行編譯數，可依電腦資源調整。
+
+若只想先套用補丁、檢查原始碼，可在同步完成後執行：
+
+```bash
+python3 "$PORT/tools/prepare.py" "$SOURCE"
+```
+
+之後照常執行 `build.sh` 即可。已套用的補丁會跳過；版本不符或補丁無法套用時會停止並顯示錯誤。
 
 ## 輸出
 
