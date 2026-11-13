@@ -2,9 +2,11 @@
 <manifest>
   <include name="pdx256-pinned.xml" />
   <extend-project name="platform/prebuilts/clang/host/linux-x86">
+    <sparse-path path="soong" />
     <sparse-path path="clang-r510928" />
   </extend-project>
   <extend-project name="platform/prebuilts/rust">
+    <sparse-path path="soong" />
     <sparse-path path="linux-x86/1.75.0" />
   </extend-project>
   <extend-project name="platform/prebuilts/abi-dumps/ndk">

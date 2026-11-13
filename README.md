@@ -2,6 +2,25 @@
 
 XQ-FS72 (pdx256) / firmware 71.2.A.2.35 / TWRP 3.7.1_14.
 
+## GitHub Actions
+
+Open **Actions → Build TWRP → Run workflow**, select `twrp-14.1`, and start the run.
+The workflow downloads the pinned sources, applies the patches, builds on a
+standard `ubuntu-22.04` runner, and uploads a `twrp-pdx256-<run number>` artifact.
+Download `recovery.img` and its SHA-256 file from the completed run. Build logs
+and the packaging verification report are included in the same artifact.
+
+For a fork, create a read-only SSH deploy key for each private companion repository
+and save the corresponding private keys as Actions secrets in the build repository:
+
+- `DEVICE_REPO_SSH_KEY`: read access to `android_device_sony_pdx256`.
+- `VENDOR_REPO_SSH_KEY`: read access to `android_vendor_sony_pdx256`.
+
+These secrets are already configured in this repository. The workflow uses a fresh
+checkout on every run; it does not need a phone, a self-hosted runner, or a build cache.
+
+## Local build
+
 ## 1. Set up the environment
 
 Use Ubuntu 22.04 or Ubuntu 22.04 on WSL2 with at least 150 GiB of free space.
