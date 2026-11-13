@@ -20,4 +20,5 @@ repo init -m pdx256-ci.xml --no-clone-bundle --repo-rev=v2.73
 repo sync -c -j4 --jobs-network=4 --jobs-checkout=2 --no-clone-bundle --fail-fast --retry-fetches=3
 repo manifest -r -o "$artifacts/source-manifest.xml"
 python3 "$port/tools/ci-prune-git.py" "$source_dir" "$artifacts/source-manifest.xml"
+git -C build/soong apply "$port/patches/ci/0001-forward-go-memory-controls.patch"
 df -h .

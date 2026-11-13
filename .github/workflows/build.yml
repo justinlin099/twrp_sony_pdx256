@@ -84,14 +84,18 @@ jobs:
         env:
           LC_ALL: en_US.UTF-8
           LANG: en_US.UTF-8
+          GOGC: '50'
+          GOMEMLIMIT: 5GiB
         run: |
           set -euo pipefail
           while true; do
-            date -u +%FT%TZ
-            df -B1 /
-            free -b
+            {
+              date -u +%FT%TZ
+              df -B1 /
+              free -b
+            } | tee -a "$RUNNER_TEMP/artifacts/resources.log"
             sleep 30
-          done > "$RUNNER_TEMP/artifacts/resources.log" &
+          done &
           monitor=$!
           trap 'kill "$monitor" 2>/dev/null || true' EXIT
           /usr/bin/time -v bash port/build.sh "$RUNNER_TEMP/source" "$RUNNER_TEMP/artifacts/recovery.img" 2 2>&1 | tee "$RUNNER_TEMP/artifacts/build.log"
