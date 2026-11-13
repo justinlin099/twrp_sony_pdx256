@@ -1,11 +1,11 @@
-# Xperia 1 VII TWRP 建置指南
+# Building TWRP for Xperia 1 VII
 
-XQ-FS72（pdx256）／韌體 71.2.A.2.35／TWRP 3.7.1_14。
+XQ-FS72 (pdx256) / firmware 71.2.A.2.35 / TWRP 3.7.1_14.
 
-## 1. 準備環境
+## 1. Set up the environment
 
-使用 Ubuntu 22.04 或 WSL2 Ubuntu 22.04，預留至少 150 GiB。
-原始碼與輸出目錄放在 Linux 檔案系統，例如 ext4。
+Use Ubuntu 22.04 or Ubuntu 22.04 on WSL2 with at least 150 GiB of free space.
+Keep the source and build output on a Linux filesystem such as ext4.
 
 ```bash
 sudo apt-get update
@@ -15,11 +15,11 @@ gh auth login
 gh auth setup-git
 ```
 
-登入的 GitHub 帳號需要能讀取本 repo 與 device、vendor 兩個私人倉庫。
+Your GitHub account needs read access to this repository and both private device and vendor repositories.
 
-## 2. 下載裝置與建置檔案
+## 2. Download the build and device files
 
-將 `/path/to/build` 改成你的建置位置。以下指令在同一個終端執行。
+Replace `/path/to/build` with your build directory. Run the following commands in the same shell.
 
 ```bash
 export BUILD_ROOT=/path/to/build
@@ -33,9 +33,9 @@ python3 "$PORT/tools/checkout-trees.py"
 sudo bash "$PORT/tools/install-build-deps.sh"
 ```
 
-`checkout-trees.py` 會下載固定版本的 device 與 vendor tree；所需原廠相依檔已包含在 vendor tree。
+`checkout-trees.py` downloads the pinned device and vendor trees. The vendor tree includes all required factory dependencies.
 
-## 3. 安裝 repo 工具
+## 3. Install the repo tool
 
 ```bash
 mkdir -p "$HOME/.local/bin"
@@ -44,7 +44,7 @@ chmod +x "$HOME/.local/bin/repo"
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-## 4. 下載 TWRP 原始碼
+## 4. Download the TWRP source
 
 ```bash
 mkdir -p "$SOURCE"
@@ -56,37 +56,37 @@ repo init -m pdx256-pinned.xml --no-clone-bundle
 repo sync -c -j8 --no-clone-bundle
 ```
 
-## 5. 套用補丁並編譯
+## 5. Apply patches and build
 
-`build.sh` 會自動完成以下步驟，不需要先手動 `git apply`：
+`build.sh` handles the following steps automatically; you do not need to run `git apply` manually:
 
-1. 核對原廠相依檔與 ramdisk 檔案雜湊。
-2. 呼叫 `tools/prepare.py`，依 `patches/series.json` 將補丁套用到 `bootable/recovery`、`system/vold` 與 `packages/modules/adb`，並安裝 device tree。
-3. 執行 `lunch twrp_pdx256-ap2a-eng`，編譯 recovery 與所需函式庫。
-4. 封裝並驗證最終映像。
+1. Verify the hashes of the factory dependencies and ramdisk files.
+2. Run `tools/prepare.py` to apply the patches listed in `patches/series.json` to `bootable/recovery`, `system/vold`, and `packages/modules/adb`, and install the device tree.
+3. Run `lunch twrp_pdx256-ap2a-eng` and compile recovery and the required libraries.
+4. Package and verify the final image.
 
 ```bash
 bash "$PORT/build.sh" "$SOURCE" "$OUTPUT" 8
 ```
 
-最後的 `8` 是平行編譯數，可依電腦資源調整。
+The final argument, `8`, sets the number of parallel build jobs. Adjust it for your machine.
 
-若只想先套用補丁、檢查原始碼，可在同步完成後執行：
+To apply the patches and inspect the source before building, run this after syncing:
 
 ```bash
 python3 "$PORT/tools/prepare.py" "$SOURCE"
 ```
 
-之後照常執行 `build.sh` 即可。已套用的補丁會跳過；版本不符或補丁無法套用時會停止並顯示錯誤。
+Then run `build.sh` as usual. Already-applied patches are skipped. A revision mismatch or patch application failure stops preparation with an error.
 
-## 輸出
+## Build output
 
-- `$BUILD_ROOT/artifacts/recovery.img`：完成封裝的 recovery 映像。
-- `$BUILD_ROOT/artifacts/recovery.json`：映像 SHA-256 與封裝驗證結果。
+- `$BUILD_ROOT/artifacts/recovery.img`: the packaged recovery image.
+- `$BUILD_ROOT/artifacts/recovery.json`: the image SHA-256 and packaging verification results.
 
-刷入時使用上述 `artifacts/recovery.img`；`twrp-source/out` 裡的 `recovery.img` 是尚未完成封裝的中間產物。
+Flash `artifacts/recovery.img`. The `recovery.img` under `twrp-source/out` is an intermediate image that has not completed the packaging step.
 
-再次編譯時指定新的輸出檔名，工具不會覆寫已存在的映像：
+Use a new output filename for subsequent builds; the packager does not overwrite existing images:
 
 ```bash
 bash "$PORT/build.sh" "$SOURCE" "$BUILD_ROOT/artifacts/recovery-v2.img" 8
