@@ -87,6 +87,16 @@ jobs:
           GOMEMLIMIT: 8GiB
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          import os, shutil
+          if shutil.disk_usage(os.environ['RUNNER_TEMP']).free < 14 * 1024**3:
+              raise SystemExit('Need 14 GiB free for build output and additional swap')
+          PY
+          test ! -e "$RUNNER_TEMP/twrp-build.swap"
+          sudo install -m 600 /dev/null "$RUNNER_TEMP/twrp-build.swap"
+          sudo fallocate -l 4G "$RUNNER_TEMP/twrp-build.swap"
+          sudo mkswap "$RUNNER_TEMP/twrp-build.swap"
+          sudo swapon "$RUNNER_TEMP/twrp-build.swap"
           while true; do
             {
               date -u +%FT%TZ
@@ -98,10 +108,7 @@ jobs:
           done &
           monitor=$!
           trap 'kill "$monitor" 2>/dev/null || true' EXIT
-          {
-            /usr/bin/time -v bash port/tools/ci-prepare-graph.sh "$RUNNER_TEMP/source"
-            /usr/bin/time -v bash port/build.sh "$RUNNER_TEMP/source" "$RUNNER_TEMP/artifacts/recovery.img" 2
-          } 2>&1 | tee "$RUNNER_TEMP/artifacts/build.log"
+          /usr/bin/time -v bash port/build.sh "$RUNNER_TEMP/source" "$RUNNER_TEMP/artifacts/recovery.img" 2 2>&1 | tee "$RUNNER_TEMP/artifacts/build.log"
           cd "$RUNNER_TEMP/artifacts"
           sha256sum recovery.img | tee recovery.img.sha256
           cat recovery.json >> "$GITHUB_STEP_SUMMARY"
