@@ -1,0 +1,25 @@
+name: Inspect standard runner capacity
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Measure disk, memory and removable preinstalled tools
+        shell: bash
+        run: |
+          printf 'Runner image: %s %s\n' "$ImageOS" "$ImageVersion"
+          df -B1 / /mnt
+          free -b
+          for dir in /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/powershell /usr/share/swift /usr/local/.ghcup /usr/local/lib/node_modules /usr/local/share/chromium; do
+            if [[ -e "$dir" ]]; then
+              sudo du -sx -B1 "$dir"
+            fi
+          done
+          sudo docker system df
