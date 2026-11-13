@@ -1,14 +1,12 @@
 diff --git a/ui/build/soong.go b/ui/build/soong.go
 --- a/ui/build/soong.go
 +++ b/ui/build/soong.go
-@@ -210,6 +210,12 @@ func (pb PrimaryBuilderFactory) primaryBuilderInvocation(config Config) bootstrap.
+@@ -210,6 +210,10 @@ func (pb PrimaryBuilderFactory) primaryBuilderInvocation(config Config) bootstrap.
  	commonArgs = append(commonArgs, "-l", filepath.Join(pb.config.FileListDir(), "Android.bp.list"))
  	invocationEnv := make(map[string]string)
-+	// Preserve explicitly requested Go memory controls across Blueprint's env -i.
-+	for _, key := range []string{"GOGC", "GOMEMLIMIT"} {
-+		if value, ok := os.LookupEnv(key); ok {
-+			invocationEnv[key] = value
-+		}
++	// Preserve the requested Go memory limit across Blueprint's env -i.
++	if value, ok := os.LookupEnv("GOMEMLIMIT"); ok {
++		invocationEnv["GOMEMLIMIT"] = value
 +	}
  	if pb.debugPort != "" {
  		//debug mode

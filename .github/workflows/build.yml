@@ -84,7 +84,6 @@ jobs:
         env:
           LC_ALL: en_US.UTF-8
           LANG: en_US.UTF-8
-          GOGC: '50'
           GOMEMLIMIT: 8GiB
         run: |
           set -euo pipefail
