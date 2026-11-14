@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: twrp-build-${{ github.ref }}
+  group: twrp-pdx256-build-release
   cancel-in-progress: false
 
 jobs:
@@ -136,10 +136,19 @@ jobs:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
-          gh release create "$RELEASE_TAG" \
-            "$RUNNER_TEMP/artifacts/$RELEASE_NAME.img" \
-            "$RUNNER_TEMP/artifacts/$RELEASE_NAME.img.sha256" \
-            "$RUNNER_TEMP/artifacts/$RELEASE_NAME.json" \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "$RELEASE_NAME" --notes-file "$RUNNER_TEMP/artifacts/release-notes.md" \
-            --latest
+          assets=(
+            "$RUNNER_TEMP/artifacts/$RELEASE_NAME.img"
+            "$RUNNER_TEMP/artifacts/$RELEASE_NAME.img.sha256"
+            "$RUNNER_TEMP/artifacts/$RELEASE_NAME.json"
+          )
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" \
+              -f sha="$GITHUB_SHA" -F force=true >/dev/null
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "$RELEASE_NAME" --notes-file "$RUNNER_TEMP/artifacts/release-notes.md" --latest
+          else
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "$RELEASE_NAME" --notes-file "$RUNNER_TEMP/artifacts/release-notes.md" --latest
+          fi

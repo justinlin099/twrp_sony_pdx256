@@ -13,8 +13,8 @@ version, device and release date in Taiwan time, for example:
 `twrp-3.7.1_14-pdx256-20261114.img`.
 Download the `.img` asset from **Releases**. Full build logs remain in the Actions
 artifact. Each release tag points to the exact source commit used for that build;
-tags retain the run and attempt numbers so same-day builds do not replace an
-existing release. These numbers are not included in asset filenames.
+the tag uses the same date-based name as the image. A successful same-day rebuild
+updates that release's three assets, notes and tag target to the new source commit.
 
 For a fork, create a read-only SSH deploy key for each private companion repository
 and save the corresponding private keys as Actions secrets in the build repository:

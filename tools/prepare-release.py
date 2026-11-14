@@ -35,7 +35,7 @@ if not report.get('policy_cil_equivalent'):
 build = f"{env['GITHUB_RUN_NUMBER']}.{env['GITHUB_RUN_ATTEMPT']}"
 date = datetime.now(timezone(timedelta(hours=8))).strftime('%Y%m%d')
 name = f'twrp-{args.version}-pdx256-{date}'
-tag = f'{name}-run{build}'
+tag = name
 targets = [root / f'{name}{suffix}' for suffix in ('.img', '.img.sha256', '.json')]
 if any(path.exists() for path in targets):
     raise SystemExit('Release assets already exist; refusing to overwrite')
