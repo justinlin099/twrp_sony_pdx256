@@ -2,6 +2,19 @@
 
 XQ-FS72 (pdx256) / firmware 71.2.A.2.35 / TWRP 3.7.1_14.
 
+## Related repositories
+
+| Repository | Purpose | Branch |
+| --- | --- | --- |
+| [Device tree](https://github.com/justinlin099/android_device_sony_pdx256/tree/twrp-14.1) | Xperia device configuration and recovery integration | `twrp-14.1` |
+| [Vendor tree](https://github.com/justinlin099/android_vendor_sony_pdx256/tree/twrp-14.1) | Required Sony proprietary dependencies | `twrp-14.1` |
+| [TWRP manifest](https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp/tree/twrp-14.1) | Upstream source manifest | `twrp-14.1` |
+| [TWRP recovery](https://github.com/TeamWin/android_bootable_recovery/tree/android-14.1) | Upstream recovery source | `android-14.1` |
+
+This repository contains the build scripts, patches and GitHub Actions workflow.
+Exact build revisions are pinned in [trees.lock.json](trees.lock.json) and
+[manifests/default.xml](manifests/default.xml).
+
 ## GitHub Actions
 
 Open **Actions → Build TWRP → Run workflow**, select `twrp-14.1`, and start the run.
