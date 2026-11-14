@@ -134,3 +134,8 @@ Use a new output filename for subsequent builds; the packager does not overwrite
 ```bash
 bash "$PORT/build.sh" "$SOURCE" "$BUILD_ROOT/artifacts/recovery-v2.img" 8
 ```
+
+## License
+
+Original project code: [GPL-3.0-or-later](LICENSE). See [LICENSING.md](LICENSING.md)
+for the covered files and third-party exclusions.

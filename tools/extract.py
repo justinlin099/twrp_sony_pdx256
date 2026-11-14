@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Justin Lin and contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Import only pinned factory inputs. No ADB, mounting, or flashing."""
 import argparse
 import hashlib

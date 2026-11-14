@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Justin Lin and contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # Run as root inside a dedicated Ubuntu 22.04 build environment.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive

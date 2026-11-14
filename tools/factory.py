@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Justin Lin and contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Read hash-checked, individually extracted Sony recovery dependencies."""
 import hashlib
 import json

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Justin Lin and contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Apply exported patches to pristine upstream files in disposable directories."""
 import argparse
 import hashlib

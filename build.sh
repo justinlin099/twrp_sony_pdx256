@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Justin Lin and contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 set -euo pipefail
 port_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 source_dir=$(realpath -- "${1:?Usage: bash build.sh SOURCE_DIR OUTPUT_IMG [JOBS]}")

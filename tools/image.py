@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Justin Lin and contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Android v4 / newc utilities shared by extraction and packaging."""
 import hashlib
 import struct

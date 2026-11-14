@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Justin Lin and contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Build Sony recovery from factory inputs + fresh build, without a prior custom image."""
 import argparse
 import hashlib

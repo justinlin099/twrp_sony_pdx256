@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Justin Lin and contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Verify pinned revisions, then discard prebuilt Git objects on disposable CI."""
 import os
 from pathlib import Path

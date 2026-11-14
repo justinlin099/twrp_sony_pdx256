@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Justin Lin and contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Clone pinned companion repositories; never overwrite an existing checkout."""
 import json
 from pathlib import Path

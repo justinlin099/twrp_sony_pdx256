@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Justin Lin and contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Verify and name CI release assets without changing the image bytes."""
 import argparse
 from datetime import datetime, timedelta, timezone

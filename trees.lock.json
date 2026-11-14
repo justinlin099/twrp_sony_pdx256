@@ -3,12 +3,12 @@
     "path": "device/sony/pdx256",
     "url": "https://github.com/justinlin099/android_device_sony_pdx256.git",
     "branch": "twrp-14.1",
-    "revision": "18c878d700b90919da9cfad1b63bb3d581caa16d"
+    "revision": "d889bab214594a313edf6f39f5b328e26de16778"
   },
   {
     "path": "vendor/sony/pdx256",
     "url": "https://github.com/justinlin099/android_vendor_sony_pdx256.git",
     "branch": "twrp-14.1",
-    "revision": "257542edb3b6faa5eeb2893e3721ec9af6b8c1f7"
+    "revision": "e8e2a466119fd50d346fb331d8a75dcc924b5d4c"
   }
 ]

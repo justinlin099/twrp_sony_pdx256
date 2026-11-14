@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Justin Lin and contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 set -euo pipefail
 test "${RUNNER_ENVIRONMENT:-}" = github-hosted
 port=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
