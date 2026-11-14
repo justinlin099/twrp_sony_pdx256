@@ -1,40 +1,30 @@
 # Licensing
 
-The original project code listed below is licensed under **GPL-3.0-or-later**:
+This build-integration project is licensed under **GPL-3.0-or-later**:
 GNU GPL version 3, or (at your option) any later version. See [LICENSE](LICENSE).
-The grant applies to the project contributions identified by their SPDX headers,
-not to every file stored in this repository or to the packaged firmware image.
 
-## Original code covered
-
-- `build.sh`
-- `.github/workflows/build.yml`
-- `tools/checkout-trees.py`
-- `tools/ci-prune-git.py`
-- `tools/ci-source.sh`
-- `tools/extract.py`
-- `tools/factory.py`
-- `tools/image.py`
-- `tools/install-build-deps.sh`
-- `tools/package.py`
-- `tools/prepare-factory.py`
-- `tools/prepare-release.py`
-- `tools/prepare.py`
-- `tools/sony_avb.py`
-- `tools/verify_source_export.py`
+This is the default license for the project's original contributions, including
+build scripts, tools, workflows, configuration, manifests, metadata and documentation,
+unless a file explicitly states otherwise. It is not limited to files with SPDX
+headers or to an enumerated list of source files.
 
 ## Third-party content
 
-- `patches/` contains changes to TeamWin/AOSP projects. The modified upstream
-  files and their existing copyright/license notices govern these patches;
-  they are not blanket-relicensed by this repository's GPL grant. Exact base
-  revisions are in `patches/series.json` and `manifests/default.xml`.
-- `manifests/default.xml` is an upstream-derived dependency manifest; preserve
-  upstream terms. Build metadata, validation reports and documents are not
-  included in the original-code grant above.
-- Device and vendor repositories have their own licensing scope. Their binaries,
-  firmware-derived content, artwork and third-party materials do not acquire
-  this repository's GPL license through the build process.
+Third-party content retains its original licenses, copyright notices and attribution
+requirements. The project's GPL license does not remove or replace those terms.
+GPL-compatible third-party content may be included in the GPL-licensed project
+subject to its applicable conditions.
 
-The license text is the verbatim GPL-3.0-or-later text from
-[SPDX license-list-data](https://github.com/spdx/license-list-data/blob/main/text/GPL-3.0-or-later.txt).
+- Patches modify TeamWin/AOSP source. Preserve upstream notices and comply with
+  the applicable upstream licenses when applying or distributing those changes.
+  Exact base revisions are recorded in `patches/series.json` and
+  `manifests/default.xml`; the CI-only Soong patch is under `patches/ci/`.
+- Manifest entries identify external repositories and pinned revisions. Listing
+  or downloading a dependency does not relicense that dependency. Any upstream
+  material retained in a manifest keeps its applicable original terms.
+- The separate device and vendor repositories retain their own licensing scopes.
+  Their firmware binaries, artwork and other third-party materials are not
+  relicensed by this build repository or by the packaging process.
+
+See [NOTICE.md](NOTICE.md) for source attribution. The GPL license text is reproduced
+verbatim from [SPDX license-list-data](https://github.com/spdx/license-list-data/blob/main/text/GPL-3.0-or-later.txt).

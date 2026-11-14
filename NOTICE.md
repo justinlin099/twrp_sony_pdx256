@@ -1,6 +1,8 @@
 # Source attribution
 
-Original build tools and workflow: see [LICENSING.md](LICENSING.md) and [LICENSE](LICENSE).
+This build-integration project is licensed under GPL-3.0-or-later.
+See [LICENSING.md](LICENSING.md) and [LICENSE](LICENSE) for the project license
+and treatment of third-party content.
 
 Patches target TeamWin recovery, AOSP-derived vold/adb and Soong. Retain each
 upstream file's notices and license. `patches/series.json` and
