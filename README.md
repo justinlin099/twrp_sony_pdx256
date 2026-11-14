@@ -137,5 +137,5 @@ bash "$PORT/build.sh" "$SOURCE" "$BUILD_ROOT/artifacts/recovery-v2.img" 8
 
 ## License
 
-Original project code: [GPL-3.0-or-later](LICENSE). See [LICENSING.md](LICENSING.md)
-for the covered files and third-party exclusions.
+This project is licensed under [GPL-3.0-or-later](LICENSE). Third-party content
+retains its original licenses and notices. See [LICENSING.md](LICENSING.md).
