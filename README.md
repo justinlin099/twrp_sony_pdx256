@@ -7,8 +7,13 @@ XQ-FS72 (pdx256) / firmware 71.2.A.2.35 / TWRP 3.7.1_14.
 Open **Actions → Build TWRP → Run workflow**, select `twrp-14.1`, and start the run.
 The workflow downloads the pinned sources, applies the patches, builds on a
 standard `ubuntu-22.04` runner, and uploads a `twrp-pdx256-<run number>` artifact.
-Download `recovery.img` and its SHA-256 file from the completed run. Build logs
-and the packaging verification report are included in the same artifact.
+After a successful build, it also publishes a GitHub Release with the image,
+SHA-256 file and packaging verification report. Image filenames include the TWRP
+version, device, run number, attempt and source commit, for example:
+`twrp-3.7.1_14-pdx256-build6.1-ad11c1b.img`.
+Download the `.img` asset from **Releases**. Full build logs remain in the Actions
+artifact. Each release tag points to the exact source commit used for that build;
+reruns get a new attempt number instead of replacing an existing release.
 
 For a fork, create a read-only SSH deploy key for each private companion repository
 and save the corresponding private keys as Actions secrets in the build repository:
@@ -21,8 +26,8 @@ checkout on every run; it does not need a phone, a self-hosted runner, or a buil
 
 [A complete standard-runner build passed](validation/standard-runner-20261113.md)
 in about 1 hour 54 minutes and produced the same image as the device-tested build.
-Artifacts are kept for 14 days. Download the image before they expire, or run the
-workflow again.
+Actions artifacts are kept for 14 days. Release assets remain available until
+the release or assets are deleted.
 
 ## Local build
 
