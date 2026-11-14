@@ -1,5 +1,6 @@
 """Verify and name CI release assets without changing the image bytes."""
 import argparse
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -32,7 +33,9 @@ if not report.get('policy_cil_equivalent'):
     raise SystemExit('Policy verification did not pass')
 
 build = f"{env['GITHUB_RUN_NUMBER']}.{env['GITHUB_RUN_ATTEMPT']}"
-name = f"twrp-{args.version}-pdx256-build{build}-{env['GITHUB_SHA'][:7]}"
+date = datetime.now(timezone(timedelta(hours=8))).strftime('%Y%m%d')
+name = f'twrp-{args.version}-pdx256-{date}'
+tag = f'{name}-run{build}'
 targets = [root / f'{name}{suffix}' for suffix in ('.img', '.img.sha256', '.json')]
 if any(path.exists() for path in targets):
     raise SystemExit('Release assets already exist; refusing to overwrite')
@@ -54,4 +57,5 @@ run_url = f"https://github.com/{env['GITHUB_REPOSITORY']}/actions/runs/{env['GIT
 if os.environ.get('GITHUB_OUTPUT'):
     with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
         print(f'name={name}', file=output)
+        print(f'tag={tag}', file=output)
 print(name)

@@ -9,11 +9,12 @@ The workflow downloads the pinned sources, applies the patches, builds on a
 standard `ubuntu-22.04` runner, and uploads a `twrp-pdx256-<run number>` artifact.
 After a successful build, it also publishes a GitHub Release with the image,
 SHA-256 file and packaging verification report. Image filenames include the TWRP
-version, device, run number, attempt and source commit, for example:
-`twrp-3.7.1_14-pdx256-build6.1-ad11c1b.img`.
+version, device and release date in Taiwan time, for example:
+`twrp-3.7.1_14-pdx256-20261114.img`.
 Download the `.img` asset from **Releases**. Full build logs remain in the Actions
 artifact. Each release tag points to the exact source commit used for that build;
-reruns get a new attempt number instead of replacing an existing release.
+tags retain the run and attempt numbers so same-day builds do not replace an
+existing release. These numbers are not included in asset filenames.
 
 For a fork, create a read-only SSH deploy key for each private companion repository
 and save the corresponding private keys as Actions secrets in the build repository:

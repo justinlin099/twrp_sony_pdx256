@@ -133,9 +133,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_NAME: ${{ steps.release.outputs.name }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
-          gh release create "$RELEASE_NAME" \
+          gh release create "$RELEASE_TAG" \
             "$RUNNER_TEMP/artifacts/$RELEASE_NAME.img" \
             "$RUNNER_TEMP/artifacts/$RELEASE_NAME.img.sha256" \
             "$RUNNER_TEMP/artifacts/$RELEASE_NAME.json" \
